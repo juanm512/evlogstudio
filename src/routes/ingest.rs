@@ -7,47 +7,35 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use crate::db::Db;
 use crate::ingest::normalize::normalize_batch;
+use crate::AppError;
 
 pub async fn ingest_handler(
     State(db): State<Arc<Db>>,
     headers: axum::http::HeaderMap,
     Json(payload): Json<Value>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, AppError> {
     let auth_header = headers.get("Authorization").and_then(|h| h.to_str().ok());
     let token = match auth_header {
         Some(h) if h.starts_with("Bearer ") => &h[7..],
         _ => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                axum::Json(json!({"error": "missing token"}))
-            ).into_response();
+            return Err(AppError::Unauthorized);
         }
     };
 
     let source = match db.verify_ingest_token(token) {
         Ok(Some(s)) => s,
         Ok(None) => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                axum::Json(json!({"error": "invalid token"}))
-            ).into_response();
+            return Err(AppError::Unauthorized);
         }
         Err(e) => {
-            tracing::error!("Token verification error: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(json!({"error": "internal server error"}))
-            ).into_response();
+            return Err(AppError::Internal(e.to_string()));
         }
     };
 
     let logs = normalize_batch(payload, &source);
 
     if logs.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            axum::Json(json!({"error": "invalid payload"}))
-        ).into_response();
+        return Err(AppError::BadRequest("invalid payload".to_string()));
     }
 
     match db.insert_logs(&logs) {
@@ -60,17 +48,13 @@ pub async fn ingest_handler(
                 }
             });
 
-            (
+            Ok((
                 StatusCode::OK,
                 axum::Json(json!({"inserted": inserted}))
-            ).into_response()
+            ))
         }
         Err(e) => {
-            tracing::error!("Error inserting logs: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(json!({"error": "internal server error"}))
-            ).into_response()
+            Err(AppError::Internal(e.to_string()))
         }
     }
 }

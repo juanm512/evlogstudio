@@ -8,7 +8,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::{db::Db, ingest::normalize::NormalizedLog};
+use crate::{db::Db, ingest::normalize::NormalizedLog, auth::middleware::AuthUser, AppError};
 
 #[derive(Debug, Deserialize)]
 pub struct LogsQuery {
@@ -28,14 +28,15 @@ pub struct LogsResponse {
 }
 
 pub async fn get_logs(
+    _user: AuthUser,
     State(db): State<Arc<Db>>,
     Query(params): Query<LogsQuery>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, AppError> {
     let mut from_dt = None;
     if let Some(ref f) = params.from {
         match chrono::DateTime::parse_from_rfc3339(f) {
             Ok(dt) => from_dt = Some(dt.with_timezone(&Utc)),
-            Err(_) => return (StatusCode::BAD_REQUEST, "Invalid 'from' date format").into_response(),
+            Err(_) => return Err(AppError::BadRequest("Invalid 'from' date format".to_string())),
         }
     }
 
@@ -43,7 +44,7 @@ pub async fn get_logs(
     if let Some(ref t) = params.to {
         match chrono::DateTime::parse_from_rfc3339(t) {
             Ok(dt) => to_dt = Some(dt.with_timezone(&Utc)),
-            Err(_) => return (StatusCode::BAD_REQUEST, "Invalid 'to' date format").into_response(),
+            Err(_) => return Err(AppError::BadRequest("Invalid 'to' date format".to_string())),
         }
     }
 
@@ -71,11 +72,10 @@ pub async fn get_logs(
             };
 
             let resp = LogsResponse { logs, next_cursor };
-            (StatusCode::OK, Json(resp)).into_response()
+            Ok((StatusCode::OK, Json(resp)))
         }
         Err(e) => {
-            tracing::error!("Error querying logs: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error").into_response()
+            Err(AppError::Internal(e.to_string()))
         }
     }
 }
@@ -88,13 +88,17 @@ mod tests {
     use serde_json::json;
     use axum_test::TestServer;
 
-    async fn setup_app() -> Router {
+    async fn setup_app() -> (Router, String) {
         let config = Config {
             data_path: ":memory:".to_string(),
             storage_mode: "local".to_string(),
             ..Default::default()
         };
         let db = Db::open(&config).unwrap();
+        
+        // Creamos un usuario de prueba para poder generar un token
+        db.create_user("test@example.com", "password", "viewer").unwrap();
+        let user = db.find_user_by_email("test@example.com").unwrap().unwrap();
         
         let dummy_logs = vec![
             NormalizedLog {
@@ -127,17 +131,29 @@ mod tests {
         ];
         db.insert_logs(&dummy_logs).unwrap();
 
-        Router::new()
+        let jwt_secret = "test-secret".to_string();
+        let token = crate::auth::create_jwt(&user, &jwt_secret).unwrap();
+
+        let app_state = crate::AppState {
+            db: Arc::new(db),
+            jwt_secret,
+        };
+
+        let app = Router::new()
             .route("/api/logs", get(get_logs))
-            .with_state(Arc::new(db))
+            .with_state(app_state);
+            
+        (app, token)
     }
 
     #[tokio::test]
     async fn test_get_logs_no_params() {
-        let app = setup_app().await;
+        let (app, token) = setup_app().await;
         let server = TestServer::new(app).unwrap();
 
-        let response = server.get("/api/logs").await;
+        let response = server.get("/api/logs")
+            .add_header(axum::http::header::AUTHORIZATION, format!("Bearer {}", token))
+            .await;
         response.assert_status(StatusCode::OK);
 
         let body_json = response.json::<serde_json::Value>();
@@ -149,10 +165,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_logs_with_limit() {
-        let app = setup_app().await;
+        let (app, token) = setup_app().await;
         let server = TestServer::new(app).unwrap();
 
-        let response = server.get("/api/logs").add_query_param("limit", 2).await;
+        let response = server.get("/api/logs").add_query_param("limit", 2)
+            .add_header(axum::http::header::AUTHORIZATION, format!("Bearer {}", token))
+            .await;
         response.assert_status(StatusCode::OK);
 
         let body_json = response.json::<serde_json::Value>();
@@ -162,10 +180,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_logs_with_level() {
-        let app = setup_app().await;
+        let (app, token) = setup_app().await;
         let server = TestServer::new(app).unwrap();
 
-        let response = server.get("/api/logs").add_query_param("level", "error").await;
+        let response = server.get("/api/logs").add_query_param("level", "error")
+            .add_header(axum::http::header::AUTHORIZATION, format!("Bearer {}", token))
+            .await;
         response.assert_status(StatusCode::OK);
 
         let body_json = response.json::<serde_json::Value>();
@@ -176,10 +196,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_logs_future_date() {
-        let app = setup_app().await;
+        let (app, token) = setup_app().await;
         let server = TestServer::new(app).unwrap();
 
-        let response = server.get("/api/logs").add_query_param("from", "2026-05-14T00:00:00Z").await;
+        let response = server.get("/api/logs").add_query_param("from", "2026-05-14T00:00:00Z")
+            .add_header(axum::http::header::AUTHORIZATION, format!("Bearer {}", token))
+            .await;
         response.assert_status(StatusCode::OK);
 
         let body_json = response.json::<serde_json::Value>();
@@ -189,10 +211,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_logs_invalid_date() {
-        let app = setup_app().await;
+        let (app, token) = setup_app().await;
         let server = TestServer::new(app).unwrap();
 
-        let response = server.get("/api/logs").add_query_param("from", "no-es-fecha").await;
+        let response = server.get("/api/logs").add_query_param("from", "no-es-fecha")
+            .add_header(axum::http::header::AUTHORIZATION, format!("Bearer {}", token))
+            .await;
         response.assert_status(StatusCode::BAD_REQUEST);
     }
 }

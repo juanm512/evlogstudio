@@ -61,3 +61,11 @@ pub fn verify_jwt(token: &str, secret: &str) -> Result<Claims, AuthError> {
 
     Ok(token_data.claims)
 }
+
+pub fn require_admin(user: &middleware::AuthUser) -> Result<(), crate::AppError> {
+    if user.role != "admin" {
+        Err(crate::AppError::Forbidden)
+    } else {
+        Ok(())
+    }
+}

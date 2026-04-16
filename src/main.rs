@@ -3,6 +3,8 @@ mod db;
 mod ingest;
 mod routes;
 mod auth;
+pub mod error;
+pub use error::AppError;
 
 use std::sync::Arc;
 

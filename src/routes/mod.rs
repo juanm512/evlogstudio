@@ -7,6 +7,7 @@ pub mod logs;
 pub mod schema;
 pub mod auth;
 pub mod sources;
+pub mod users;
 
 pub fn create_router(state: AppState) -> Router {
     Router::new()
@@ -17,5 +18,6 @@ pub fn create_router(state: AppState) -> Router {
         .route("/auth/login", post(auth::login_handler))
         .route("/setup", get(auth::setup_get_handler).post(auth::setup_post_handler))
         .merge(sources::router())
+        .merge(users::router())
         .with_state(state)
 }

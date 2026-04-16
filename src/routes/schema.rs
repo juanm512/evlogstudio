@@ -8,6 +8,8 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::db::Db;
+use crate::auth::middleware::AuthUser;
+use crate::AppError;
 
 #[derive(Debug, Deserialize)]
 pub struct SchemaQuery {
@@ -15,15 +17,15 @@ pub struct SchemaQuery {
 }
 
 pub async fn get_schema(
+    _user: AuthUser,
     State(db): State<Arc<Db>>,
     Query(params): Query<SchemaQuery>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, AppError> {
     let source_ref = params.source.as_deref();
     match db.get_schema(source_ref) {
-        Ok(entries) => (StatusCode::OK, Json(entries)).into_response(),
+        Ok(entries) => Ok((StatusCode::OK, Json(entries))),
         Err(e) => {
-            tracing::error!("Error querying schema: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error").into_response()
+            Err(AppError::Internal(e.to_string()))
         }
     }
 }

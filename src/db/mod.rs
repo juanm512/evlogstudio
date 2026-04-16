@@ -15,6 +15,15 @@ pub struct UserRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserPublicRecord {
+    pub id: String,
+    pub email: String,
+    pub role: String,
+    pub created_at: Option<DateTime<Utc>>,
+    pub last_login: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceRecord {
     pub id: String,
     pub name: String,
@@ -403,6 +412,66 @@ impl Db {
             .map_err(|e| DbError::Query(e.to_string()))?;
         stmt.execute([user_id]).map_err(|e| DbError::Query(e.to_string()))?;
         Ok(())
+    }
+
+    pub fn list_users(&self) -> Result<Vec<UserPublicRecord>, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare("SELECT id, email, role, CAST(created_at AS VARCHAR), CAST(last_login AS VARCHAR) FROM users ORDER BY created_at ASC")
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        
+        let row_iter = stmt.query_map([], |row| {
+            let parse_time = |s: Option<String>| s.and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).map(|d| d.with_timezone(&Utc)).ok());
+            Ok(UserPublicRecord {
+                id: row.get(0)?,
+                email: row.get(1)?,
+                role: row.get(2)?,
+                created_at: parse_time(row.get(3)?),
+                last_login: parse_time(row.get(4)?),
+            })
+        }).map_err(|e| DbError::Query(e.to_string()))?;
+
+        let mut users = Vec::new();
+        for u in row_iter {
+            users.push(u.map_err(|e| DbError::Query(e.to_string()))?);
+        }
+        Ok(users)
+    }
+
+    pub fn find_user_by_id(&self, id: &str) -> Result<Option<UserRecord>, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare("SELECT id, email, password_hash, role FROM users WHERE id = ?")
+            .map_err(|e| DbError::Query(e.to_string()))?;
+            
+        let mut rows = stmt.query([id]).map_err(|e| DbError::Query(e.to_string()))?;
+        if let Some(row) = rows.next().map_err(|e| DbError::Query(e.to_string()))? {
+            Ok(Some(UserRecord {
+                id: row.get(0).map_err(|e| DbError::Query(e.to_string()))?,
+                email: row.get(1).map_err(|e| DbError::Query(e.to_string()))?,
+                password_hash: row.get(2).map_err(|e| DbError::Query(e.to_string()))?,
+                role: row.get(3).map_err(|e| DbError::Query(e.to_string()))?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn update_user_role(&self, id: &str, role: &str) -> Result<bool, DbError> {
+        if role != "admin" && role != "viewer" {
+            return Err(DbError::Query("El rol debe ser admin o viewer".to_string()));
+        }
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare("UPDATE users SET role = ? WHERE id = ?")
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        let count = stmt.execute([role, id]).map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(count > 0)
+    }
+
+    pub fn delete_user(&self, id: &str) -> Result<bool, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare("DELETE FROM users WHERE id = ?")
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        let count = stmt.execute([id]).map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(count > 0)
     }
 
     pub fn create_source(&self, name: &str, description: Option<&str>, retention_days: Option<i32>) -> Result<String, DbError> {

@@ -8,6 +8,7 @@ use serde_json::json;
 
 use crate::AppState;
 use crate::auth::create_jwt;
+use crate::AppError;
 
 pub mod dto {
     use super::*;
@@ -27,10 +28,10 @@ pub mod dto {
 pub async fn login_handler(
     State(state): State<AppState>,
     Json(payload): Json<dto::LoginReq>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, AppError> {
     let user = match state.db.find_user_by_email(&payload.email) {
         Ok(Some(u)) => u,
-        _ => return (StatusCode::UNAUTHORIZED, Json(json!({"error": "invalid credentials"}))).into_response(),
+        _ => return Err(AppError::Unauthorized),
     };
 
     use argon2::{password_hash::PasswordHash, Argon2, PasswordVerifier};
@@ -43,38 +44,35 @@ pub async fn login_handler(
     };
 
     if !is_valid {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"error": "invalid credentials"}))).into_response();
+        return Err(AppError::Unauthorized);
     }
 
     let _ = state.db.update_last_login(&user.id);
 
     match create_jwt(&user, &state.jwt_secret) {
-        Ok(token) => (
+        Ok(token) => Ok((
             StatusCode::OK,
             Json(json!({"token": token, "role": user.role})),
-        ).into_response(),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "failed to create token"})),
-        ).into_response(),
+        )),
+        Err(_) => Err(AppError::Internal("failed to create token".to_string())),
     }
 }
 
 pub async fn setup_get_handler(
     State(state): State<AppState>,
     Query(query): Query<dto::SetupQuery>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, AppError> {
     match state.db.count_users() {
         Ok(0) => {}
-        _ => return (StatusCode::NOT_FOUND, Json(json!({"error": "setup already completed"}))).into_response(),
+        _ => return Err(AppError::NotFound),
     }
 
     match state.db.get_config_value("setup.token") {
         Ok(Some(token)) if token == query.token => {
-            (StatusCode::OK, Json(json!({"message": "ready"}))).into_response()
+            Ok((StatusCode::OK, Json(json!({"message": "ready"}))))
         }
-        Ok(None) => (StatusCode::NOT_FOUND, Json(json!({"error": "setup token not found"}))).into_response(),
-        _ => (StatusCode::UNAUTHORIZED, Json(json!({"error": "invalid or expired token"}))).into_response(),
+        Ok(None) => Err(AppError::NotFound),
+        _ => Err(AppError::Unauthorized),
     }
 }
 
@@ -82,26 +80,26 @@ pub async fn setup_post_handler(
     State(state): State<AppState>,
     Query(query): Query<dto::SetupQuery>,
     Json(payload): Json<dto::LoginReq>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, AppError> {
     match state.db.count_users() {
         Ok(0) => {}
-        _ => return (StatusCode::NOT_FOUND, Json(json!({"error": "setup already completed"}))).into_response(),
+        _ => return Err(AppError::NotFound),
     }
 
     match state.db.get_config_value("setup.token") {
         Ok(Some(token)) if token == query.token => {}
-        _ => return (StatusCode::UNAUTHORIZED, Json(json!({"error": "invalid or expired token"}))).into_response(),
+        _ => return Err(AppError::Unauthorized),
     }
 
     if !payload.email.contains('@') || payload.password.len() < 8 {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid email or password too short (min 8)"}))).into_response();
+        return Err(AppError::BadRequest("invalid email or password too short (min 8)".to_string()));
     }
 
     match state.db.create_user(&payload.email, &payload.password, "admin") {
         Ok(_) => {
             let _ = state.db.set_config_value("setup.token", "");
-            (StatusCode::OK, Json(json!({"message": "admin created"}))).into_response()
+            Ok((StatusCode::OK, Json(json!({"message": "admin created"}))))
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        Err(e) => Err(AppError::Internal(e.to_string())),
     }
 }
