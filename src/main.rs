@@ -67,7 +67,7 @@ async fn main() {
     // Imprimir banner si corresponde (primer arranque)
     ensure_initial_setup(&shared_db);
 
-    info!("evlogagent listening on {}:{}", cfg.host, cfg.port);
+    info!("evlogstudio listening on {}:{}", cfg.host, cfg.port);
     info!("storage: {}", cfg.storage_mode);
     if cfg.storage_mode == "local" {
         info!("database ready at {}", cfg.data_path);

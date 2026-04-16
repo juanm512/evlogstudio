@@ -141,7 +141,7 @@ impl Db {
                     .expect("MOTHERDUCK_TOKEN es requerido para storage_mode=motherduck");
                 // MotherDuck lee el token desde la variable de entorno
                 std::env::set_var("motherduck_token", token);
-                let conn = Connection::open("md:evlogagent")
+                let conn = Connection::open("md:evlogstudio")
                     .map_err(|e| DbError::Open(format!("MotherDuck: {}", e)))?;
                 let db = Db { conn: Mutex::new(conn), s3_cfg: None };
                 db.run_migrations()?;
@@ -159,7 +159,7 @@ impl Db {
                 let region = config.s3_region.clone()
                     .unwrap_or_else(|| "us-east-1".to_string());
 
-                let conn = Connection::open("/tmp/evlogagent_buffer.duckdb")
+                let conn = Connection::open("/tmp/evlogstudio_buffer.duckdb")
                     .map_err(|e| DbError::Open(format!("S3 buffer: {}", e)))?;
 
                 let s3_cfg = S3Cfg {
@@ -952,7 +952,7 @@ impl Db {
             &cfg.secret_access_key,
             None,
             None,
-            "evlogagent",
+            "evlogstudio",
         );
         let region = Region::new(cfg.region.clone());
         let mut builder = aws_sdk_s3::Config::builder()
@@ -974,7 +974,7 @@ impl Db {
         };
 
         // 1. Exportar a Parquet local
-        let export_path = "/tmp/evlogagent_export.parquet";
+        let export_path = "/tmp/evlogstudio_export.parquet";
         let row_count: i64 = {
             let conn = self.conn.lock()
                 .map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
@@ -1023,7 +1023,7 @@ impl Db {
         };
 
         let client = Self::build_s3_client(cfg);
-        let download_path = "/tmp/evlogagent_download.parquet";
+        let download_path = "/tmp/evlogstudio_download.parquet";
 
         // 1. Intentar descargar
         let get_result = client
