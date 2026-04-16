@@ -64,14 +64,20 @@ pub async fn get_logs(
     };
 
     match db.query_logs(&db_params) {
-        Ok(logs) => {
-            let next_cursor = if logs.len() == limit as usize {
-                logs.last().map(|l| l.id.clone())
+        Ok(mut rows) => {
+            // DB returned up to limit+1 rows. If we got limit+1, there is a next page.
+            let has_more = rows.len() > limit as usize;
+            if has_more {
+                rows.truncate(limit as usize);
+            }
+
+            let next_cursor = if has_more {
+                rows.last().map(|l| l.id.clone())
             } else {
                 None
             };
 
-            let resp = LogsResponse { logs, next_cursor };
+            let resp = LogsResponse { logs: rows, next_cursor };
             Ok((StatusCode::OK, Json(resp)))
         }
         Err(e) => {

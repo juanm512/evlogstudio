@@ -36,10 +36,9 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn list_sources(
-    user: AuthUser,
+    _user: AuthUser,
     State(db): State<Arc<Db>>,
 ) -> Result<impl IntoResponse, AppError> {
-    require_admin(&user)?;
     match db.list_sources() {
         Ok(sources) => Ok((StatusCode::OK, axum::Json(sources))),
         Err(e) => Err(AppError::Internal(e.to_string())),
@@ -62,7 +61,12 @@ async fn create_source(
         Ok(id) => Ok((StatusCode::CREATED, axum::Json(json!({"id": id, "name": name})))),
         Err(e) => {
             let err_str = e.to_string();
-            if err_str.contains("UNIQUE") || err_str.contains("UNIQUE constraint failed") {
+            // DuckDB: "Duplicate key ... violates unique constraint"
+            // SQLite: "UNIQUE constraint failed"
+            let is_conflict = err_str.contains("UNIQUE")
+                || err_str.contains("violates unique constraint")
+                || err_str.contains("Duplicate key");
+            if is_conflict {
                 Err(AppError::Conflict("source already exists".to_string()))
             } else {
                 Err(AppError::Internal(err_str))

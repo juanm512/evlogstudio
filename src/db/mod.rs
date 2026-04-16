@@ -190,8 +190,10 @@ impl Db {
             args.push(Box::new(c.clone()));
         }
 
+        // Fetch limit+1 so the caller can detect whether a next page exists
+        let fetch_limit = u64::from(params.limit) + 1;
         query.push_str(" ORDER BY timestamp DESC LIMIT ?");
-        args.push(Box::new(params.limit));
+        args.push(Box::new(fetch_limit as i64));
 
         let mut stmt = conn.prepare(&query).map_err(|e| DbError::Query(e.to_string()))?;
 
@@ -314,6 +316,22 @@ impl Db {
         }
 
         Ok(entries)
+    }
+
+    pub fn list_schema_sources(&self) -> Result<Vec<String>, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare("SELECT DISTINCT source FROM _schema ORDER BY source")
+            .map_err(|e| DbError::Query(e.to_string()))?;
+
+        let row_iter = stmt.query_map([], |row| {
+            row.get::<_, String>(0)
+        }).map_err(|e| DbError::Query(e.to_string()))?;
+
+        let mut sources = Vec::new();
+        for r in row_iter {
+            sources.push(r.map_err(|e| DbError::Query(e.to_string()))?);
+        }
+        Ok(sources)
     }
 
     pub fn get_config_value(&self, key: &str) -> Result<Option<String>, DbError> {
