@@ -43,6 +43,19 @@ pub struct IngestTokenRecord {
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct VolumePoint {
+    pub bucket: DateTime<Utc>,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ErrorRateResult {
+    pub total: i64,
+    pub errors: i64,
+    pub rate: f64,
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum DbError {
     #[error("Error al abrir base de datos: {0}")]
@@ -51,6 +64,8 @@ pub enum DbError {
     Migration(String),
     #[error("Error de consulta: {0}")]
     Query(String),
+    #[error("Input invalido: {0}")]
+    InvalidInput(String),
 }
 
 pub struct Db {
@@ -623,6 +638,119 @@ impl Db {
         } else {
             Ok(None)
         }
+    }
+
+    pub fn analytics_volume(
+        &self,
+        source: Option<&str>,
+        from: Option<DateTime<Utc>>,
+        to: Option<DateTime<Utc>>,
+        interval: &str,
+    ) -> Result<Vec<VolumePoint>, DbError> {
+        match interval {
+            "minute" | "hour" | "day" | "week" => {}
+            _ => return Err(DbError::InvalidInput("invalid interval".to_string())),
+        }
+
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+
+        // interval has been validated above – safe to interpolate
+        let mut query = format!(
+            "SELECT CAST(DATE_TRUNC('{}', CAST(timestamp AS TIMESTAMP)) AS VARCHAR) AS bucket, COUNT(*) AS count \
+             FROM logs WHERE 1=1",
+            interval
+        );
+        let mut args: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
+
+        if let Some(s) = source {
+            query.push_str(" AND source = ?");
+            args.push(Box::new(s.to_string()));
+        }
+        if let Some(f) = from {
+            query.push_str(" AND CAST(timestamp AS TIMESTAMP) >= CAST(? AS TIMESTAMP)");
+            args.push(Box::new(f.to_rfc3339()));
+        }
+        if let Some(t) = to {
+            query.push_str(" AND CAST(timestamp AS TIMESTAMP) <= CAST(? AS TIMESTAMP)");
+            args.push(Box::new(t.to_rfc3339()));
+        }
+        query.push_str(" GROUP BY bucket ORDER BY bucket ASC");
+
+        let mut stmt = conn.prepare(&query).map_err(|e| DbError::Query(e.to_string()))?;
+        let sql_args: Vec<&dyn duckdb::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+
+        let row_iter = stmt.query_map(sql_args.as_slice(), |row| {
+            let bucket_str: String = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            Ok((bucket_str, count))
+        }).map_err(|e| DbError::Query(e.to_string()))?;
+
+        let mut points = Vec::new();
+        for r in row_iter {
+            let (bucket_str, count) = r.map_err(|e| DbError::Query(e.to_string()))?;
+            // DuckDB may return timestamps in various formats; try RFC3339 first then a plain format
+            let bucket = chrono::DateTime::parse_from_rfc3339(&bucket_str)
+                .map(|d| d.with_timezone(&Utc))
+                .or_else(|_| {
+                    chrono::NaiveDateTime::parse_from_str(&bucket_str, "%Y-%m-%d %H:%M:%S")
+                        .map(|ndt| ndt.and_utc())
+                })
+                .or_else(|_| {
+                    chrono::NaiveDateTime::parse_from_str(&bucket_str, "%Y-%m-%dT%H:%M:%S")
+                        .map(|ndt| ndt.and_utc())
+                })
+                .map_err(|e| DbError::Query(format!("bucket parse error: {}", e)))?;
+            points.push(VolumePoint { bucket, count });
+        }
+        Ok(points)
+    }
+
+    pub fn analytics_error_rate(
+        &self,
+        source: Option<&str>,
+        from: Option<DateTime<Utc>>,
+        to: Option<DateTime<Utc>>,
+    ) -> Result<ErrorRateResult, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+
+        // Build shared WHERE clause (after WHERE 1=1)
+        let mut where_suffix = String::new();
+        let mut args: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
+
+        if let Some(s) = source {
+            where_suffix.push_str(" AND source = ?");
+            args.push(Box::new(s.to_string()));
+        }
+        if let Some(f) = from {
+            where_suffix.push_str(" AND CAST(timestamp AS TIMESTAMP) >= CAST(? AS TIMESTAMP)");
+            args.push(Box::new(f.to_rfc3339()));
+        }
+        if let Some(t) = to {
+            where_suffix.push_str(" AND CAST(timestamp AS TIMESTAMP) <= CAST(? AS TIMESTAMP)");
+            args.push(Box::new(t.to_rfc3339()));
+        }
+
+        // Total count
+        let total_query = format!("SELECT COUNT(*) FROM logs WHERE 1=1{}", where_suffix);
+        let sql_args: Vec<&dyn duckdb::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+        let mut stmt = conn.prepare(&total_query).map_err(|e| DbError::Query(e.to_string()))?;
+        let total: i64 = stmt.query_row(sql_args.as_slice(), |row| row.get(0))
+            .map_err(|e| DbError::Query(e.to_string()))?;
+
+        // Error count (level IN ('error','fatal'))
+        let errors_query = format!(
+            "SELECT COUNT(*) FROM logs WHERE 1=1{} AND level IN ('error','fatal')",
+            where_suffix
+        );
+        let sql_args2: Vec<&dyn duckdb::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+        let mut stmt2 = conn.prepare(&errors_query).map_err(|e| DbError::Query(e.to_string()))?;
+        let errors: i64 = stmt2.query_row(sql_args2.as_slice(), |row| row.get(0))
+            .map_err(|e| DbError::Query(e.to_string()))?;
+
+        let raw_rate = if total == 0 { 0.0 } else { errors as f64 / total as f64 };
+        let rate = (raw_rate * 10_000.0).round() / 10_000.0;
+
+        Ok(ErrorRateResult { total, errors, rate })
     }
 }
 
