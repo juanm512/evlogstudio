@@ -14,6 +14,26 @@ pub struct UserRecord {
     pub role: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceRecord {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub retention_days: Option<i32>,
+    pub created_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestTokenRecord {
+    pub id: String,
+    pub name: String,
+    pub source: String,
+    pub created_by: String,
+    pub created_at: Option<DateTime<Utc>>,
+    pub last_used: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum DbError {
     #[error("Error al abrir base de datos: {0}")]
@@ -383,6 +403,139 @@ impl Db {
             .map_err(|e| DbError::Query(e.to_string()))?;
         stmt.execute([user_id]).map_err(|e| DbError::Query(e.to_string()))?;
         Ok(())
+    }
+
+    pub fn create_source(&self, name: &str, description: Option<&str>, retention_days: Option<i32>) -> Result<String, DbError> {
+        if name.is_empty() {
+            return Err(DbError::Query("El nombre del source no puede estar vacio".to_string()));
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare("INSERT INTO sources (id, name, description, retention_days, created_at) VALUES (?, ?, ?, ?, now())")
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        stmt.execute(duckdb::params![&id, name, description, retention_days.unwrap_or(30)])
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(id)
+    }
+
+    pub fn list_sources(&self) -> Result<Vec<SourceRecord>, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare("SELECT id, name, description, retention_days, CAST(created_at AS VARCHAR) FROM sources ORDER BY created_at DESC")
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        
+        let row_iter = stmt.query_map([], |row| {
+            let created_at_str: Option<String> = row.get(4)?;
+            let created_at = created_at_str.and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).map(|d| d.with_timezone(&Utc)).ok());
+            Ok(SourceRecord {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                retention_days: row.get(3)?,
+                created_at,
+            })
+        }).map_err(|e| DbError::Query(e.to_string()))?;
+
+        let mut sources = Vec::new();
+        for s in row_iter {
+            sources.push(s.map_err(|e| DbError::Query(e.to_string()))?);
+        }
+        Ok(sources)
+    }
+
+    pub fn delete_source(&self, id: &str) -> Result<bool, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare("DELETE FROM sources WHERE id = ?").map_err(|e| DbError::Query(e.to_string()))?;
+        let count = stmt.execute([id]).map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(count > 0)
+    }
+
+    pub fn create_ingest_token(&self, name: &str, source_name: &str, created_by: &str) -> Result<(String, String), DbError> {
+        use rand::RngCore;
+        use sha2::{Sha256, Digest};
+        
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        let token_real = format!("tok_{}", hex::encode(bytes));
+        
+        let mut hasher = Sha256::new();
+        hasher.update(token_real.as_bytes());
+        let token_hash = hex::encode(hasher.finalize());
+        
+        let id = uuid::Uuid::new_v4().to_string();
+        
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare(
+            "INSERT INTO ingest_tokens (id, name, token_hash, source, created_by, created_at) VALUES (?, ?, ?, ?, ?, now())"
+        ).map_err(|e| DbError::Query(e.to_string()))?;
+            
+        stmt.execute(duckdb::params![&id, name, &token_hash, source_name, created_by])
+            .map_err(|e| DbError::Query(e.to_string()))?;
+            
+        Ok((id, token_real))
+    }
+
+    pub fn list_ingest_tokens(&self, source_id: Option<&str>) -> Result<Vec<IngestTokenRecord>, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        
+        let mut query = "SELECT id, name, source, created_by, CAST(created_at AS VARCHAR), CAST(last_used AS VARCHAR), CAST(revoked_at AS VARCHAR) FROM ingest_tokens".to_string();
+        let mut args: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
+        
+        if let Some(s) = source_id {
+            query.push_str(" WHERE source = (SELECT name FROM sources WHERE id = ?)");
+            args.push(Box::new(s.to_string()));
+        }
+        query.push_str(" ORDER BY created_at DESC");
+        
+        let mut stmt = conn.prepare(&query).map_err(|e| DbError::Query(e.to_string()))?;
+        let sql_args: Vec<&dyn duckdb::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+            
+        let row_iter = stmt.query_map(sql_args.as_slice(), |row| {
+            let parse_time = |s: Option<String>| s.and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).map(|d| d.with_timezone(&Utc)).ok());
+            Ok(IngestTokenRecord {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                source: row.get(2)?,
+                created_by: row.get(3)?,
+                created_at: parse_time(row.get(4)?),
+                last_used: parse_time(row.get(5)?),
+                revoked_at: parse_time(row.get(6)?),
+            })
+        }).map_err(|e| DbError::Query(e.to_string()))?;
+
+        let mut tokens = Vec::new();
+        for t in row_iter {
+            tokens.push(t.map_err(|e| DbError::Query(e.to_string()))?);
+        }
+        Ok(tokens)
+    }
+
+    pub fn revoke_ingest_token(&self, id: &str) -> Result<bool, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare("UPDATE ingest_tokens SET revoked_at = now() WHERE id = ? AND revoked_at IS NULL").map_err(|e| DbError::Query(e.to_string()))?;
+        let count = stmt.execute([id]).map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(count > 0)
+    }
+
+    pub fn verify_ingest_token(&self, raw_token: &str) -> Result<Option<String>, DbError> {
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(raw_token.as_bytes());
+        let token_hash = hex::encode(hasher.finalize());
+        
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        
+        let mut stmt = conn.prepare("SELECT source FROM ingest_tokens WHERE token_hash = ? AND revoked_at IS NULL")
+            .map_err(|e| DbError::Query(e.to_string()))?;
+            
+        let mut rows = stmt.query([&token_hash]).map_err(|e| DbError::Query(e.to_string()))?;
+        if let Some(row) = rows.next().map_err(|e| DbError::Query(e.to_string()))? {
+            let source: String = row.get(0).map_err(|e| DbError::Query(e.to_string()))?;
+            let mut upd_stmt = conn.prepare("UPDATE ingest_tokens SET last_used = now() WHERE token_hash = ?").map_err(|e| DbError::Query(e.to_string()))?;
+            let _ = upd_stmt.execute([&token_hash]);
+            Ok(Some(source))
+        } else {
+            Ok(None)
+        }
     }
 }
 

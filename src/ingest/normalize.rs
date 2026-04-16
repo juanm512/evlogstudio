@@ -14,7 +14,7 @@ pub struct NormalizedLog {
     pub ingested_at: DateTime<Utc>,
 }
 
-pub fn normalize(mut payload: Value) -> NormalizedLog {
+pub fn normalize(mut payload: Value, source: &str) -> NormalizedLog {
     let mut timestamp = None;
     let mut level = None;
     let mut message = None;
@@ -53,7 +53,7 @@ pub fn normalize(mut payload: Value) -> NormalizedLog {
     NormalizedLog {
         id: Uuid::new_v4().to_string(),
         timestamp: timestamp.unwrap_or_else(Utc::now),
-        source: "default".to_string(), // Source from token in the future
+        source: source.to_string(), // Source from token in the future
         level,
         message,
         fields: payload,
@@ -61,10 +61,10 @@ pub fn normalize(mut payload: Value) -> NormalizedLog {
     }
 }
 
-pub fn normalize_batch(payload: Value) -> Vec<NormalizedLog> {
+pub fn normalize_batch(payload: Value, source: &str) -> Vec<NormalizedLog> {
     match payload {
-        Value::Array(arr) => arr.into_iter().map(normalize).collect(),
-        Value::Object(_) => vec![normalize(payload)],
+        Value::Array(arr) => arr.into_iter().map(|p| normalize(p, source)).collect(),
+        Value::Object(_) => vec![normalize(payload, source)],
         _ => vec![],
     }
 }
@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn test_normalize_batch_with_object_returns_1_log() {
         let payload = json!({"message": "test event"});
-        let logs = normalize_batch(payload);
+        let logs = normalize_batch(payload, "default");
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].message.as_deref(), Some("test event"));
     }
@@ -89,7 +89,7 @@ mod tests {
             {"message": "ev 2"},
             {"message": "ev 3"}
         ]);
-        let logs = normalize_batch(payload);
+        let logs = normalize_batch(payload, "default");
         assert_eq!(logs.len(), 3);
         assert_eq!(logs[0].message.as_deref(), Some("ev 1"));
         assert_eq!(logs[2].message.as_deref(), Some("ev 3"));
@@ -98,14 +98,14 @@ mod tests {
     #[test]
     fn test_normalize_batch_with_string_returns_empty_vec() {
         let payload = json!("a simple string without json structure");
-        let logs = normalize_batch(payload);
+        let logs = normalize_batch(payload, "default");
         assert!(logs.is_empty());
     }
 
     #[test]
     fn test_normalize_extracts_msg_if_no_message() {
         let payload = json!({"msg": "fallback via msg", "level": "info"});
-        let log = normalize(payload);
+        let log = normalize(payload, "default");
         assert_eq!(log.message.as_deref(), Some("fallback via msg"));
     }
 
@@ -114,7 +114,7 @@ mod tests {
         let payload = json!({"msg": "no time here"});
         
         let before = Utc::now();
-        let log = normalize(payload);
+        let log = normalize(payload, "default");
         let after = Utc::now();
 
         // The timestamp must be between the start and end of the test execution
@@ -128,7 +128,7 @@ mod tests {
             "message": {"error": "timeout"}, 
             "level": 50
         });
-        let log = normalize(payload);
+        let log = normalize(payload, "default");
         assert_eq!(log.message, None);
         assert_eq!(log.level, None);
     }
@@ -139,7 +139,7 @@ mod tests {
         let payload = json!({"timestamp": "yesterday"});
         
         let before = Utc::now();
-        let log = normalize(payload);
+        let log = normalize(payload, "default");
         let after = Utc::now();
 
         assert!(log.timestamp >= before && log.timestamp <= after);
@@ -148,7 +148,7 @@ mod tests {
     #[test]
     fn test_normalize_extracts_timestamp_iso8601_correctly() {
         let payload = json!({"timestamp": "2023-10-15T12:00:00Z"});
-        let log = normalize(payload);
+        let log = normalize(payload, "default");
         let expected = chrono::DateTime::parse_from_rfc3339("2023-10-15T12:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
@@ -167,7 +167,7 @@ mod tests {
             "msg": "secondary message"
         });
         
-        let log = normalize(payload);
+        let log = normalize(payload, "default");
         let expected_time = chrono::DateTime::parse_from_rfc3339("2023-01-01T00:00:00Z").unwrap().with_timezone(&Utc);
         
         assert_eq!(log.timestamp, expected_time);
@@ -184,7 +184,7 @@ mod tests {
             "extra_field": 123
         });
         
-        let log = normalize(payload.clone());
+        let log = normalize(payload.clone(), "default");
         // The embedded 'fields' should be exactly the unchanged original payload
         assert_eq!(log.fields, payload);
     }
@@ -195,8 +195,8 @@ mod tests {
         let bool_payload = json!(true);
         let number_payload = json!(100);
         
-        assert!(normalize_batch(null_payload).is_empty());
-        assert!(normalize_batch(bool_payload).is_empty());
-        assert!(normalize_batch(number_payload).is_empty());
+        assert!(normalize_batch(null_payload, "default").is_empty());
+        assert!(normalize_batch(bool_payload, "default").is_empty());
+        assert!(normalize_batch(number_payload, "default").is_empty());
     }
 }
