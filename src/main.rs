@@ -62,12 +62,12 @@ async fn main() {
             panic!("Error al guardar setup token: {}", e);
         });
         println!("    ╔══════════════════════════════════════════════════╗");
-        println!("    ║  Setup inicial requerido                         ║");
+        println!("    ║  Initial setup required                          ║");
         println!("    ║                                                  ║");
-        println!("    ║  Completá el setup en:                           ║");
+        println!("    ║  Complete setup at:                              ║");
         println!("    ║  POST /setup?token={:<30}║", setup_token);
         println!("    ║                                                  ║");
-        println!("    ║  Este token expira en 24hs.                      ║");
+        println!("    ║  This token expires in 24 hours.                 ║");
         println!("    ╚══════════════════════════════════════════════════╝");
     }
 
