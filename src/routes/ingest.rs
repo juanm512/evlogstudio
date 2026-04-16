@@ -23,6 +23,14 @@ pub async fn ingest_handler(
 
     match db.insert_logs(&logs) {
         Ok(inserted) => {
+            let bg_db = db.clone();
+            tokio::spawn(async move {
+                let entries = crate::ingest::schema::infer_schema(&logs);
+                if let Err(e) = bg_db.upsert_schema(&entries) {
+                    tracing::error!("Error upserting schema: {}", e);
+                }
+            });
+
             (
                 StatusCode::OK,
                 axum::Json(json!({"inserted": inserted}))

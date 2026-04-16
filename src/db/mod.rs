@@ -207,6 +207,75 @@ impl Db {
         let value: String = stmt.query_row([], |row| row.get(0)).map_err(|e| DbError::Query(e.to_string()))?;
         value.parse::<i64>().map_err(|e| DbError::Query(format!("Invalid retention days format: {}", e)))
     }
+
+    pub fn upsert_schema(&self, entries: &[crate::ingest::schema::SchemaEntry]) -> Result<(), DbError> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        let mut conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let tx = conn.transaction().map_err(|e| DbError::Query(format!("Error starting transaction: {}", e)))?;
+
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO _schema (source, field_path, field_type, seen_count, last_seen) \
+                 VALUES (?, ?, ?, 1, now()) \
+                 ON CONFLICT (source, field_path) DO UPDATE SET \
+                 seen_count = _schema.seen_count + 1, \
+                 last_seen = now()"
+            ).map_err(|e| DbError::Query(format!("Prepare statement error: {}", e)))?;
+
+            for entry in entries {
+                stmt.execute(duckdb::params![
+                    &entry.source,
+                    &entry.field_path,
+                    &entry.field_type
+                ]).map_err(|e| DbError::Query(format!("Execute statement error: {}", e)))?;
+            }
+        }
+
+        tx.commit().map_err(|e| DbError::Query(format!("Commit transaction error: {}", e)))?;
+        Ok(())
+    }
+
+    pub fn get_schema(&self, source: Option<&str>) -> Result<Vec<crate::ingest::schema::SchemaEntry>, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+
+        let mut args: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
+        let mut query = "SELECT source, field_path, field_type, seen_count, CAST(last_seen AS VARCHAR) FROM _schema".to_string();
+
+        if let Some(s) = source {
+            query.push_str(" WHERE source = ?");
+            args.push(Box::new(s.to_string()));
+        }
+
+        query.push_str(" ORDER BY source, field_path");
+
+        let mut stmt = conn.prepare(&query).map_err(|e| DbError::Query(e.to_string()))?;
+        let sql_args: Vec<&dyn duckdb::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+
+        let row_iter = stmt.query_map(sql_args.as_slice(), |row| {
+            let last_seen_str: String = row.get(4)?;
+            let last_seen = chrono::DateTime::parse_from_rfc3339(&last_seen_str)
+                .map(|d| d.with_timezone(&Utc))
+                .ok();
+
+            Ok(crate::ingest::schema::SchemaEntry {
+                source: row.get(0)?,
+                field_path: row.get(1)?,
+                field_type: row.get(2)?,
+                seen_count: row.get(3)?,
+                last_seen,
+            })
+        }).map_err(|e| DbError::Query(e.to_string()))?;
+
+        let mut entries = Vec::new();
+        for r in row_iter {
+            entries.push(r.map_err(|e| DbError::Query(e.to_string()))?);
+        }
+
+        Ok(entries)
+    }
 }
 
 #[derive(Debug, Clone)]
