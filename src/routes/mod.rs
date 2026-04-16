@@ -14,6 +14,7 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health::health_handler))
         .route("/ingest", post(ingest::ingest_handler))
+        .route("/api/logs/poll", get(logs::poll_logs))
         .route("/api/logs", get(logs::get_logs))
         .route("/api/schema", get(schema::get_schema))
         .route("/auth/login", post(auth::login_handler))

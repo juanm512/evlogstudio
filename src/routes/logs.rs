@@ -86,6 +86,63 @@ pub async fn get_logs(
     }
 }
 
+// ----- Polling endpoint -----
+
+#[derive(Debug, Deserialize)]
+pub struct PollQuery {
+    pub source: Option<String>,
+    pub level: Option<String>,
+    /// ID of the last log seen by the client. Used to derive the `ingested_at` cutoff.
+    pub since_id: Option<String>,
+    /// ISO-8601 fallback cutoff when `since_id` is absent or unknown.
+    pub since_timestamp: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PollResponse {
+    pub logs: Vec<crate::db::LogRecord>,
+    pub last_id: Option<String>,
+    pub last_timestamp: Option<chrono::DateTime<Utc>>,
+    pub count: usize,
+}
+
+pub async fn poll_logs(
+    _user: AuthUser,
+    State(db): State<Arc<Db>>,
+    Query(params): Query<PollQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let since_ts = if let Some(ref s) = params.since_timestamp {
+        match chrono::DateTime::parse_from_rfc3339(s) {
+            Ok(dt) => Some(dt.with_timezone(&Utc)),
+            Err(_) => return Err(AppError::BadRequest("Invalid 'since_timestamp' date format".to_string())),
+        }
+    } else {
+        None
+    };
+
+    let mut limit = params.limit.unwrap_or(100);
+    if limit > 500 {
+        limit = 500;
+    }
+
+    let records = db
+        .poll_logs(
+            params.source.as_deref(),
+            params.level.as_deref(),
+            params.since_id.as_deref(),
+            since_ts,
+            limit,
+        )
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let count = records.len();
+    let last_id = records.last().map(|r| r.id.clone());
+    let last_timestamp = records.last().map(|r| r.ingested_at);
+
+    Ok((StatusCode::OK, Json(PollResponse { logs: records, last_id, last_timestamp, count })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,6 +163,7 @@ mod tests {
         db.create_user("test@example.com", "password", "viewer").unwrap();
         let user = db.find_user_by_email("test@example.com").unwrap().unwrap();
         
+        let now = Utc::now();
         let dummy_logs = vec![
             NormalizedLog {
                 id: "1".to_string(),
@@ -114,7 +172,7 @@ mod tests {
                 level: Some("info".to_string()),
                 message: Some("log 1 info".to_string()),
                 fields: json!({"extra": "a"}),
-                ingested_at: Utc::now(),
+                ingested_at: now - chrono::Duration::hours(3),
             },
             NormalizedLog {
                 id: "2".to_string(),
@@ -123,7 +181,7 @@ mod tests {
                 level: Some("error".to_string()),
                 message: Some("log 2 error".to_string()),
                 fields: json!({"extra": "b"}),
-                ingested_at: Utc::now(),
+                ingested_at: now - chrono::Duration::hours(2),
             },
             NormalizedLog {
                 id: "3".to_string(),
@@ -132,7 +190,7 @@ mod tests {
                 level: Some("warn".to_string()),
                 message: Some("log 3 warn".to_string()),
                 fields: json!({"extra": "c"}),
-                ingested_at: Utc::now(),
+                ingested_at: now - chrono::Duration::hours(1),
             },
         ];
         db.insert_logs(&dummy_logs).unwrap();
@@ -146,6 +204,7 @@ mod tests {
         };
 
         let app = Router::new()
+            .route("/api/logs/poll", get(poll_logs))
             .route("/api/logs", get(get_logs))
             .with_state(app_state);
             
@@ -224,5 +283,87 @@ mod tests {
             .add_header(axum::http::header::AUTHORIZATION, format!("Bearer {}", token))
             .await;
         response.assert_status(StatusCode::BAD_REQUEST);
+    }
+
+    // ----- poll_logs tests -----
+
+    #[tokio::test]
+    async fn test_poll_logs_no_params_returns_200_with_correct_shape() {
+        let (app, token) = setup_app().await;
+        let server = TestServer::new(app).unwrap();
+
+        // No params: default window is now()-30s. The 3 test logs were just inserted,
+        // so they should all appear.
+        let response = server
+            .get("/api/logs/poll")
+            .add_header(axum::http::header::AUTHORIZATION, format!("Bearer {}", token))
+            .await;
+        response.assert_status(StatusCode::OK);
+
+        let body: serde_json::Value = response.json();
+        assert!(body["logs"].is_array(), "'logs' must be an array");
+        assert!(body["count"].is_number(), "'count' must be a number");
+        // last_id and last_timestamp may be non-null because we have logs
+        let count = body["count"].as_u64().unwrap();
+        if count == 0 {
+            assert!(body["last_id"].is_null());
+            assert!(body["last_timestamp"].is_null());
+        } else {
+            assert!(!body["last_id"].is_null());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_poll_logs_with_since_id_returns_only_newer_logs() {
+        let (app, token) = setup_app().await;
+        let server = TestServer::new(app).unwrap();
+
+        // Logs were inserted with ingested_at staggered: id=1 at -3h, id=2 at -2h, id=3 at -1h.
+        // Polling with since_id=2 (cutoff = -2h) should return only log id=3.
+        let response = server
+            .get("/api/logs/poll")
+            .add_query_param("since_id", "2")
+            .add_header(axum::http::header::AUTHORIZATION, format!("Bearer {}", token))
+            .await;
+        response.assert_status(StatusCode::OK);
+
+        let body: serde_json::Value = response.json();
+        // Exactly one log (id=3) has ingested_at > (ingested_at of id=2)
+        assert_eq!(body["count"].as_u64().unwrap(), 1);
+        assert_eq!(body["last_id"].as_str().unwrap(), "3");
+    }
+
+    #[tokio::test]
+    async fn test_poll_logs_count_zero_when_no_new_logs() {
+        let (app, token) = setup_app().await;
+        let server = TestServer::new(app).unwrap();
+
+        // Use a future since_timestamp so nothing can possibly be newer
+        let response = server
+            .get("/api/logs/poll")
+            .add_query_param("since_timestamp", "2099-01-01T00:00:00Z")
+            .add_header(axum::http::header::AUTHORIZATION, format!("Bearer {}", token))
+            .await;
+        response.assert_status(StatusCode::OK);
+
+        let body: serde_json::Value = response.json();
+        assert_eq!(body["count"].as_u64().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_poll_logs_last_id_null_when_empty() {
+        let (app, token) = setup_app().await;
+        let server = TestServer::new(app).unwrap();
+
+        let response = server
+            .get("/api/logs/poll")
+            .add_query_param("since_timestamp", "2099-01-01T00:00:00Z")
+            .add_header(axum::http::header::AUTHORIZATION, format!("Bearer {}", token))
+            .await;
+        response.assert_status(StatusCode::OK);
+
+        let body: serde_json::Value = response.json();
+        assert!(body["last_id"].is_null(), "last_id must be null when no logs returned");
+        assert!(body["last_timestamp"].is_null(), "last_timestamp must be null when no logs returned");
     }
 }

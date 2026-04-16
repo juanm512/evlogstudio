@@ -43,6 +43,17 @@ pub struct IngestTokenRecord {
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogRecord {
+    pub id: String,
+    pub timestamp: DateTime<Utc>,
+    pub source: String,
+    pub level: Option<String>,
+    pub message: Option<String>,
+    pub fields: serde_json::Value,
+    pub ingested_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct VolumePoint {
     pub bucket: DateTime<Utc>,
@@ -70,6 +81,28 @@ pub enum DbError {
 
 pub struct Db {
     conn: Mutex<Connection>,
+}
+
+/// Parse a timestamp string as emitted by DuckDB's `CAST(col AS VARCHAR)` for TIMESTAMPTZ columns.
+/// DuckDB may produce RFC3339, `"YYYY-MM-DD HH:MM:SS+HH"`, `"YYYY-MM-DDT HH:MM:SS"`, or plain
+/// `"YYYY-MM-DD HH:MM:SS"`. Returns `None` if none of the known formats match.
+fn parse_duckdb_timestamptz(s: &str) -> Option<DateTime<Utc>> {
+    // Try RFC3339 first (most precise, includes +00:00 or Z)
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    // DuckDB's default VARCHAR format for timestamps with timezone: "YYYY-MM-DD HH:MM:SS+HH"
+    if let Ok(dt) = chrono::DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%z") {
+        return Some(dt.with_timezone(&Utc));
+    }
+    // Without timezone offset (treat as UTC)
+    if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        return Some(ndt.and_utc());
+    }
+    if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+        return Some(ndt.and_utc());
+    }
+    None
 }
 
 impl Db {
@@ -751,6 +784,104 @@ impl Db {
         let rate = (raw_rate * 10_000.0).round() / 10_000.0;
 
         Ok(ErrorRateResult { total, errors, rate })
+    }
+
+    /// Returns logs that arrived after a given cutoff, ordered by ingested_at ASC.
+    /// Used by the polling endpoint: "give me what arrived since the last log I saw".
+    pub fn poll_logs(
+        &self,
+        source: Option<&str>,
+        level: Option<&str>,
+        since_id: Option<&str>,
+        since_timestamp: Option<DateTime<Utc>>,
+        limit: u32,
+    ) -> Result<Vec<LogRecord>, DbError> {
+        let conn = self.conn.lock()
+            .map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+
+        // Build the WHERE clause for the ingested_at cutoff.
+        //
+        // When since_id is given we use a SQL subquery so DuckDB compares TIMESTAMPTZ
+        // natively, avoiding any Rust-side timestamp parsing issues.
+        // The COALESCE handles the case where the ID is not found: it falls through to
+        // the bound fallback timestamp.
+        let mut args: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
+
+        let cutoff_clause: String;
+        if let Some(id) = since_id {
+            // Fallback: since_timestamp or now()-30s (as RFC3339 which DuckDB accepts)
+            let fallback = since_timestamp
+                .unwrap_or_else(|| Utc::now() - chrono::Duration::seconds(30))
+                .to_rfc3339();
+            // COALESCE: use the referenced log's ingested_at; if not found use fallback
+            cutoff_clause = "ingested_at > COALESCE(\
+                (SELECT ingested_at FROM logs WHERE id = ?), \
+                CAST(? AS TIMESTAMPTZ)\
+            )".to_string();
+            args.push(Box::new(id.to_string()));
+            args.push(Box::new(fallback));
+        } else {
+            let cutoff = since_timestamp
+                .unwrap_or_else(|| Utc::now() - chrono::Duration::seconds(30))
+                .to_rfc3339();
+            cutoff_clause = "ingested_at > CAST(? AS TIMESTAMPTZ)".to_string();
+            args.push(Box::new(cutoff));
+        }
+
+        // --- Build full query ---
+        let mut query = format!(
+            "SELECT id, CAST(timestamp AS VARCHAR), source, level, message, fields, CAST(ingested_at AS VARCHAR) \
+             FROM logs WHERE {}",
+            cutoff_clause
+        );
+
+        if let Some(s) = source {
+            query.push_str(" AND source = ?");
+            args.push(Box::new(s.to_string()));
+        }
+        if let Some(l) = level {
+            query.push_str(" AND level = ?");
+            args.push(Box::new(l.to_string()));
+        }
+
+        query.push_str(" ORDER BY ingested_at ASC LIMIT ?");
+        args.push(Box::new(i64::from(limit)));
+
+        let mut stmt = conn.prepare(&query).map_err(|e| DbError::Query(e.to_string()))?;
+        let sql_args: Vec<&dyn duckdb::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+
+        let row_iter = stmt.query_map(sql_args.as_slice(), |row| {
+            let ts_str: String = row.get(1)?;
+            let timestamp = chrono::DateTime::parse_from_rfc3339(&ts_str)
+                .map(|d| d.with_timezone(&Utc))
+                .or_else(|_| {
+                    chrono::NaiveDateTime::parse_from_str(&ts_str, "%Y-%m-%d %H:%M:%S")
+                        .map(|ndt| ndt.and_utc())
+                })
+                .unwrap_or_default();
+
+            let ing_str: String = row.get(6)?;
+            let ingested_at = parse_duckdb_timestamptz(&ing_str).unwrap_or_default();
+
+            let fields_str: String = row.get(5)?;
+            let fields = serde_json::from_str(&fields_str).unwrap_or(serde_json::Value::Null);
+
+            Ok(LogRecord {
+                id: row.get(0)?,
+                timestamp,
+                source: row.get(2)?,
+                level: row.get(3)?,
+                message: row.get(4)?,
+                fields,
+                ingested_at,
+            })
+        }).map_err(|e| DbError::Query(e.to_string()))?;
+
+        let mut records = Vec::new();
+        for r in row_iter {
+            records.push(r.map_err(|e| DbError::Query(e.to_string()))?);
+        }
+        Ok(records)
     }
 }
 
