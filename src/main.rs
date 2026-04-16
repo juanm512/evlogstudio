@@ -1,5 +1,7 @@
 mod config;
+mod db;
 mod routes;
+use std::sync::Arc;
 
 use tracing::{info, Level};
 use tracing_subscriber::EnvFilter;
@@ -20,12 +22,19 @@ async fn main() {
         panic!("Error al cargar configuracion desde variables de entorno: {}", e);
     });
 
+    let db = db::Db::open(&cfg).unwrap_or_else(|e| {
+        panic!("Error al inicializar la base de datos: {}", e);
+    });
+
+    let shared_db = Arc::new(db);
+
     info!(
         "evlogagent listening on {}:{}, storage={}",
         cfg.host, cfg.port, cfg.storage_mode
     );
+    info!("database ready at {}", cfg.data_path);
 
-    let app = routes::create_router();
+    let app = routes::create_router(shared_db);
 
     let addr = format!("{}:{}", cfg.host, cfg.port);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap_or_else(|e| {
