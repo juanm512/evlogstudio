@@ -2,10 +2,24 @@ mod config;
 mod db;
 mod ingest;
 mod routes;
+mod auth;
+
 use std::sync::Arc;
 
 use tracing::{info, Level};
 use tracing_subscriber::EnvFilter;
+
+#[derive(Clone)]
+pub struct AppState {
+    pub db: Arc<db::Db>,
+    pub jwt_secret: String,
+}
+
+impl axum::extract::FromRef<AppState> for Arc<db::Db> {
+    fn from_ref(state: &AppState) -> Arc<db::Db> {
+        state.db.clone()
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -29,6 +43,34 @@ async fn main() {
 
     let shared_db = Arc::new(db);
 
+    let jwt_secret = shared_db.get_or_create_jwt_secret().unwrap_or_else(|e| {
+        panic!("Error al inicializar jwt secret: {}", e);
+    });
+
+    let app_state = AppState {
+        db: shared_db.clone(),
+        jwt_secret,
+    };
+
+    let user_count = shared_db.count_users().unwrap_or_else(|e| {
+        panic!("Error al contar usuarios: {}", e);
+    });
+
+    if user_count == 0 {
+        let setup_token = uuid::Uuid::new_v4().to_string();
+        shared_db.set_config_value("setup.token", &setup_token).unwrap_or_else(|e| {
+            panic!("Error al guardar setup token: {}", e);
+        });
+        println!("    ╔══════════════════════════════════════════════════╗");
+        println!("    ║  Setup inicial requerido                         ║");
+        println!("    ║                                                  ║");
+        println!("    ║  Completá el setup en:                           ║");
+        println!("    ║  POST /setup?token={:<30}║", setup_token);
+        println!("    ║                                                  ║");
+        println!("    ║  Este token expira en 24hs.                      ║");
+        println!("    ╚══════════════════════════════════════════════════╝");
+    }
+
     info!(
         "evlogagent listening on {}:{}, storage={}",
         cfg.host, cfg.port, cfg.storage_mode
@@ -51,7 +93,7 @@ async fn main() {
         }
     });
 
-    let app = routes::create_router(shared_db);
+    let app = routes::create_router(app_state);
 
     let addr = format!("{}:{}", cfg.host, cfg.port);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap_or_else(|e| {

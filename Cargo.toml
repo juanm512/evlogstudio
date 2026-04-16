@@ -20,6 +20,9 @@ tracing         = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror       = "1"
 tower-http      = { version = "0.5", features = ["cors", "trace"] }
+jsonwebtoken    = "9"
+argon2          = "0.5"
+rand            = "0.8"
 
 [dev-dependencies]
 axum-test       = "15"

@@ -4,6 +4,15 @@ use crate::config::Config;
 use duckdb::Connection;
 use std::sync::Mutex;
 use chrono::{DateTime, Utc};
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserRecord {
+    pub id: String,
+    pub email: String,
+    pub password_hash: String,
+    pub role: String,
+}
 
 #[derive(thiserror::Error, Debug)]
 pub enum DbError {
@@ -276,6 +285,104 @@ impl Db {
         }
 
         Ok(entries)
+    }
+
+    pub fn get_config_value(&self, key: &str) -> Result<Option<String>, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare("SELECT value FROM config WHERE key = ?")
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        
+        let mut rows = stmt.query([key]).map_err(|e| DbError::Query(e.to_string()))?;
+        if let Some(row) = rows.next().map_err(|e| DbError::Query(e.to_string()))? {
+            let value: String = row.get(0).map_err(|e| DbError::Query(e.to_string()))?;
+            Ok(Some(value))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn set_config_value(&self, key: &str, value: &str) -> Result<(), DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare(
+            "INSERT INTO config (key, value, updated_at) VALUES (?, ?, now()) \
+             ON CONFLICT (key) DO UPDATE SET value = ?, updated_at = now()"
+        ).map_err(|e| DbError::Query(e.to_string()))?;
+        
+        stmt.execute([key, value, value]).map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn get_or_create_jwt_secret(&self) -> Result<String, DbError> {
+        if let Some(secret) = self.get_config_value("jwt.secret")? {
+            return Ok(secret);
+        }
+
+        use rand::RngCore;
+        let mut bytes = [0u8; 64];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        let secret: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+        
+        self.set_config_value("jwt.secret", &secret)?;
+        Ok(secret)
+    }
+
+    pub fn count_users(&self) -> Result<i64, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare("SELECT COUNT(*) FROM users")
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        let count: i64 = stmt.query_row([], |row| row.get(0)).map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(count)
+    }
+
+    pub fn create_user(&self, email: &str, password: &str, role: &str) -> Result<String, DbError> {
+        use argon2::{
+            password_hash::{rand_core::OsRng, PasswordHasher, SaltString},
+            Argon2
+        };
+        
+        let salt = SaltString::generate(&mut OsRng);
+        let argon2 = Argon2::default();
+        let password_hash = argon2.hash_password(password.as_bytes(), &salt)
+            .map_err(|e| DbError::Query(format!("Password hash error: {}", e)))?
+            .to_string();
+
+        let id = uuid::Uuid::new_v4().to_string();
+
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare(
+            "INSERT INTO users (id, email, password_hash, role, created_at) VALUES (?, ?, ?, ?, now())"
+        ).map_err(|e| DbError::Query(e.to_string()))?;
+        
+        stmt.execute(duckdb::params![&id, email, &password_hash, role])
+            .map_err(|e| DbError::Query(e.to_string()))?;
+            
+        Ok(id)
+    }
+
+    pub fn find_user_by_email(&self, email: &str) -> Result<Option<UserRecord>, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare("SELECT id, email, password_hash, role FROM users WHERE email = ?")
+            .map_err(|e| DbError::Query(e.to_string()))?;
+            
+        let mut rows = stmt.query([email]).map_err(|e| DbError::Query(e.to_string()))?;
+        if let Some(row) = rows.next().map_err(|e| DbError::Query(e.to_string()))? {
+            Ok(Some(UserRecord {
+                id: row.get(0).map_err(|e| DbError::Query(e.to_string()))?,
+                email: row.get(1).map_err(|e| DbError::Query(e.to_string()))?,
+                password_hash: row.get(2).map_err(|e| DbError::Query(e.to_string()))?,
+                role: row.get(3).map_err(|e| DbError::Query(e.to_string()))?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn update_last_login(&self, user_id: &str) -> Result<(), DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare("UPDATE users SET last_login = now() WHERE id = ?")
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        stmt.execute([user_id]).map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(())
     }
 }
 
