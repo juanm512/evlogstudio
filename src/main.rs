@@ -54,13 +54,39 @@ async fn main() {
         jwt_secret,
     };
 
-    let user_count = shared_db.count_users().unwrap_or_else(|e| {
+    // Imprimir banner si corresponde (primer arranque)
+    ensure_initial_setup(&shared_db);
+
+    info!(
+        "evlogagent listening on {}:{}, storage={}",
+        cfg.host, cfg.port, cfg.storage_mode
+    );
+    info!("database ready at {}", cfg.data_path);
+
+    // Arrancar tareas de fondo
+    start_retention_job(shared_db.clone());
+
+    let app = routes::create_router(app_state);
+
+    let addr = format!("{}:{}", cfg.host, cfg.port);
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap_or_else(|e| {
+        panic!("Error al hacer bind en la direccion {}: {}", addr, e);
+    });
+
+    axum::serve(listener, app).await.unwrap_or_else(|e| {
+        panic!("Error al iniciar el servidor Axum: {}", e);
+    });
+}
+
+/// Verifica si es necesario el setup inicial y muestra el banner
+fn ensure_initial_setup(db: &Arc<db::Db>) {
+    let user_count = db.count_users().unwrap_or_else(|e| {
         panic!("Error al contar usuarios: {}", e);
     });
 
     if user_count == 0 {
         let setup_token = uuid::Uuid::new_v4().to_string();
-        shared_db.set_config_value("setup.token", &setup_token).unwrap_or_else(|e| {
+        db.set_config_value("setup.token", &setup_token).unwrap_or_else(|e| {
             panic!("Error al guardar setup token: {}", e);
         });
         println!("    ╔══════════════════════════════════════════════════╗");
@@ -72,20 +98,16 @@ async fn main() {
         println!("    ║  This token expires in 24 hours.                 ║");
         println!("    ╚══════════════════════════════════════════════════╝");
     }
+}
 
-    info!(
-        "evlogagent listening on {}:{}, storage={}",
-        cfg.host, cfg.port, cfg.storage_mode
-    );
-    info!("database ready at {}", cfg.data_path);
-
-    let bg_db = shared_db.clone();
+/// Arranca el job de limpieza de logs antiguos segun retencion
+fn start_retention_job(db: Arc<db::Db>) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
-            match bg_db.get_retention_days() {
+            match db.get_retention_days() {
                 Ok(days) => {
-                    match bg_db.delete_old_logs(days) {
+                    match db.delete_old_logs(days) {
                         Ok(deleted) => tracing::info!("Retention job: deleted {} old logs", deleted),
                         Err(e) => tracing::error!("Retention job: error deleting logs: {}", e),
                     }
@@ -93,16 +115,5 @@ async fn main() {
                 Err(e) => tracing::error!("Retention job: error reading retention_days: {}", e),
             }
         }
-    });
-
-    let app = routes::create_router(app_state);
-
-    let addr = format!("{}:{}", cfg.host, cfg.port);
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap_or_else(|e| {
-        panic!("Error al hacer bind en la direccion {}: {}", addr, e);
-    });
-
-    axum::serve(listener, app).await.unwrap_or_else(|e| {
-        panic!("Error al iniciar el servidor Axum: {}", e);
     });
 }
