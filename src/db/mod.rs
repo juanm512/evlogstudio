@@ -194,7 +194,8 @@ impl Db {
 
     pub fn delete_old_logs(&self, retention_days: i64) -> Result<usize, DbError> {
         let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
-        let q = format!("DELETE FROM logs WHERE ingested_at < now() - INTERVAL {} DAY", retention_days);
+        let threshold = chrono::Utc::now() - chrono::Duration::days(retention_days);
+        let q = format!("DELETE FROM logs WHERE ingested_at < '{}'", threshold.to_rfc3339());
         let mut stmt = conn.prepare(&q).map_err(|e| DbError::Query(e.to_string()))?;
         let count = stmt.execute([]).map_err(|e| DbError::Query(e.to_string()))?;
         Ok(count)
