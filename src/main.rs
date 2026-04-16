@@ -35,6 +35,22 @@ async fn main() {
     );
     info!("database ready at {}", cfg.data_path);
 
+    let bg_db = shared_db.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            match bg_db.get_retention_days() {
+                Ok(days) => {
+                    match bg_db.delete_old_logs(days) {
+                        Ok(deleted) => tracing::info!("Retention job: deleted {} old logs", deleted),
+                        Err(e) => tracing::error!("Retention job: error deleting logs: {}", e),
+                    }
+                }
+                Err(e) => tracing::error!("Retention job: error reading retention_days: {}", e),
+            }
+        }
+    });
+
     let app = routes::create_router(shared_db);
 
     let addr = format!("{}:{}", cfg.host, cfg.port);

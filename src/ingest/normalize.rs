@@ -1,8 +1,9 @@
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NormalizedLog {
     pub id: String,
     pub timestamp: DateTime<Utc>,
@@ -142,6 +143,16 @@ mod tests {
         let after = Utc::now();
 
         assert!(log.timestamp >= before && log.timestamp <= after);
+    }
+
+    #[test]
+    fn test_normalize_extracts_timestamp_iso8601_correctly() {
+        let payload = json!({"timestamp": "2023-10-15T12:00:00Z"});
+        let log = normalize(payload);
+        let expected = chrono::DateTime::parse_from_rfc3339("2023-10-15T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(log.timestamp, expected);
     }
 
     #[test]

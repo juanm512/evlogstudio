@@ -3,6 +3,7 @@ pub mod schema;
 use crate::config::Config;
 use duckdb::Connection;
 use std::sync::Mutex;
+use chrono::{DateTime, Utc};
 
 #[derive(thiserror::Error, Debug)]
 pub enum DbError {
@@ -119,4 +120,102 @@ impl Db {
         let count: i64 = stmt.query_row([], |row| row.get(0)).map_err(|e| DbError::Query(e.to_string()))?;
         Ok(count as usize)
     }
+
+    pub fn query_logs(&self, params: &LogQueryParams) -> Result<Vec<crate::ingest::normalize::NormalizedLog>, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        
+        let mut query = "SELECT id, CAST(timestamp AS VARCHAR), source, level, message, fields, CAST(ingested_at AS VARCHAR) FROM logs WHERE 1=1".to_string();
+        let mut args: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
+
+        if let Some(ref s) = params.source {
+            query.push_str(" AND source = ?");
+            args.push(Box::new(s.clone()));
+        }
+        if let Some(ref l) = params.level {
+            query.push_str(" AND level = ?");
+            args.push(Box::new(l.clone()));
+        }
+        if let Some(ref f) = params.from {
+            query.push_str(" AND timestamp >= ?");
+            args.push(Box::new(f.to_rfc3339()));
+        }
+        if let Some(ref t) = params.to {
+            query.push_str(" AND timestamp <= ?");
+            args.push(Box::new(t.to_rfc3339()));
+        }
+        if let Some(ref search) = params.search {
+            query.push_str(" AND message LIKE ?");
+            args.push(Box::new(format!("%{}%", search)));
+        }
+        if let Some(ref c) = params.cursor {
+            query.push_str(" AND id < ?");
+            args.push(Box::new(c.clone()));
+        }
+
+        query.push_str(" ORDER BY timestamp DESC LIMIT ?");
+        args.push(Box::new(params.limit));
+
+        let mut stmt = conn.prepare(&query).map_err(|e| DbError::Query(e.to_string()))?;
+
+        let sql_args: Vec<&dyn duckdb::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+
+        let log_iter = stmt.query_map(sql_args.as_slice(), |row| {
+            let fields_str: String = row.get(5)?;
+            let fields = serde_json::from_str(&fields_str).unwrap_or(serde_json::Value::Null);
+
+            let ts_str: String = row.get(1)?;
+            let timestamp = chrono::DateTime::parse_from_rfc3339(&ts_str)
+                .map(|d| d.with_timezone(&Utc))
+                .unwrap_or_default();
+            
+            let ing_str: String = row.get(6)?;
+            let ingested_at = chrono::DateTime::parse_from_rfc3339(&ing_str)
+                .map(|d| d.with_timezone(&Utc))
+                .unwrap_or_default();
+
+            Ok(crate::ingest::normalize::NormalizedLog {
+                id: row.get(0)?,
+                timestamp,
+                source: row.get(2)?,
+                level: row.get(3)?,
+                message: row.get(4)?,
+                fields,
+                ingested_at,
+            })
+        }).map_err(|e| DbError::Query(e.to_string()))?;
+
+        let mut logs = Vec::new();
+        for log in log_iter {
+            logs.push(log.map_err(|e| DbError::Query(e.to_string()))?);
+        }
+
+        Ok(logs)
+    }
+
+    pub fn delete_old_logs(&self, retention_days: i64) -> Result<usize, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let q = format!("DELETE FROM logs WHERE ingested_at < now() - INTERVAL {} DAY", retention_days);
+        let mut stmt = conn.prepare(&q).map_err(|e| DbError::Query(e.to_string()))?;
+        let count = stmt.execute([]).map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(count)
+    }
+
+    pub fn get_retention_days(&self) -> Result<i64, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare("SELECT value FROM config WHERE key = 'retention.default_days'")
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        let value: String = stmt.query_row([], |row| row.get(0)).map_err(|e| DbError::Query(e.to_string()))?;
+        value.parse::<i64>().map_err(|e| DbError::Query(format!("Invalid retention days format: {}", e)))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LogQueryParams {
+    pub source: Option<String>,
+    pub level: Option<String>,
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+    pub search: Option<String>,
+    pub limit: u32,
+    pub cursor: Option<String>,
 }
