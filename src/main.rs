@@ -1,5 +1,6 @@
 mod config;
 mod db;
+mod ingest;
 mod routes;
 use std::sync::Arc;
 

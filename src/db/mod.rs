@@ -76,4 +76,47 @@ impl Db {
 
         Ok(())
     }
+
+    pub fn insert_logs(&self, logs: &[crate::ingest::normalize::NormalizedLog]) -> Result<usize, DbError> {
+        if logs.is_empty() {
+            return Ok(0);
+        }
+
+        let mut conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let tx = conn.transaction().map_err(|e| DbError::Query(format!("Error starting transaction: {}", e)))?;
+
+        let mut count = 0;
+        {
+            let mut stmt = tx.prepare("INSERT INTO logs (id, timestamp, source, level, message, fields, ingested_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+                .map_err(|e| DbError::Query(format!("Prepare statement error: {}", e)))?;
+
+            for log in logs {
+                let fields_json = log.fields.to_string(); // fields serializado a JSON
+                let ts_str = log.timestamp.to_rfc3339();
+                let ing_str = log.ingested_at.to_rfc3339();
+                
+                stmt.execute(duckdb::params![
+                    &log.id,
+                    &ts_str,
+                    &log.source,
+                    &log.level,
+                    &log.message,
+                    &fields_json,
+                    &ing_str
+                ]).map_err(|e| DbError::Query(format!("Execute statement error: {}", e)))?;
+                
+                count += 1;
+            }
+        }
+        tx.commit().map_err(|e| DbError::Query(format!("Commit transaction error: {}", e)))?;
+
+        Ok(count)
+    }
+
+    pub fn count_logs(&self) -> Result<usize, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare("SELECT count(*) FROM logs").map_err(|e| DbError::Query(e.to_string()))?;
+        let count: i64 = stmt.query_row([], |row| row.get(0)).map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(count as usize)
+    }
 }
