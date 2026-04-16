@@ -43,6 +43,16 @@ async fn main() {
         panic!("Error al inicializar la base de datos: {}", e);
     });
 
+    // En modo s3: restaurar desde el snapshot antes de arrancar
+    if cfg.storage_mode == "s3" {
+        let rt = tokio::runtime::Handle::current();
+        rt.block_on(async {
+            db.load_from_s3().await.unwrap_or_else(|e| {
+                panic!("Error al cargar datos desde S3: {}", e);
+            });
+        });
+    }
+
     let shared_db = Arc::new(db);
 
     let jwt_secret = shared_db.get_or_create_jwt_secret().unwrap_or_else(|e| {
@@ -57,14 +67,17 @@ async fn main() {
     // Imprimir banner si corresponde (primer arranque)
     ensure_initial_setup(&shared_db);
 
-    info!(
-        "evlogagent listening on {}:{}, storage={}",
-        cfg.host, cfg.port, cfg.storage_mode
-    );
-    info!("database ready at {}", cfg.data_path);
+    info!("evlogagent listening on {}:{}", cfg.host, cfg.port);
+    info!("storage: {}", cfg.storage_mode);
+    if cfg.storage_mode == "local" {
+        info!("database ready at {}", cfg.data_path);
+    }
 
     // Arrancar tareas de fondo
     start_retention_job(shared_db.clone());
+    if cfg.storage_mode == "s3" {
+        start_s3_sync_job(shared_db.clone());
+    }
 
     let app = routes::create_router(app_state);
 
@@ -113,6 +126,20 @@ fn start_retention_job(db: Arc<db::Db>) {
                     }
                 }
                 Err(e) => tracing::error!("Retention job: error reading retention_days: {}", e),
+            }
+        }
+    });
+}
+
+/// Arranca el job de sincronización periódica con S3 (cada 60 segundos).
+/// Solo debe llamarse cuando storage_mode == "s3".
+fn start_s3_sync_job(db: Arc<db::Db>) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            match db.sync_to_s3().await {
+                Ok(()) => tracing::info!("S3 sync job: ok"),
+                Err(e) => tracing::error!("S3 sync job: error: {}", e),
             }
         }
     });

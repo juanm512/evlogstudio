@@ -10,6 +10,16 @@ pub struct Config {
     pub storage_mode: String,
     #[serde(default = "default_data_path")]
     pub data_path: String,
+
+    // ── MotherDuck ──────────────────────────────────────────────────────────
+    pub motherduck_token: Option<String>,
+
+    // ── S3 / R2 / MinIO ─────────────────────────────────────────────────────
+    pub s3_bucket: Option<String>,
+    pub s3_region: Option<String>,
+    pub s3_endpoint: Option<String>,
+    pub s3_access_key_id: Option<String>,
+    pub s3_secret_access_key: Option<String>,
 }
 
 fn default_port() -> u16 {
@@ -35,6 +45,12 @@ impl Default for Config {
             host: default_host(),
             storage_mode: default_storage_mode(),
             data_path: default_data_path(),
+            motherduck_token: None,
+            s3_bucket: None,
+            s3_region: None,
+            s3_endpoint: None,
+            s3_access_key_id: None,
+            s3_secret_access_key: None,
         }
     }
 }

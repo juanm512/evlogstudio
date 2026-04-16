@@ -5,6 +5,13 @@ use duckdb::Connection;
 use std::sync::Mutex;
 use chrono::{DateTime, Utc};
 use serde::{Serialize, Deserialize};
+use aws_sdk_s3::{
+    Client as S3Client,
+    config::{Credentials, Region},
+    error::SdkError,
+    operation::get_object::GetObjectError,
+};
+use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserRecord {
@@ -79,8 +86,20 @@ pub enum DbError {
     InvalidInput(String),
 }
 
+/// Configuración de S3 almacenada en el struct Db cuando storage_mode=s3.
+#[derive(Clone, Debug)]
+struct S3Cfg {
+    bucket: String,
+    region: String,
+    endpoint: Option<String>,
+    access_key_id: String,
+    secret_access_key: String,
+}
+
 pub struct Db {
     conn: Mutex<Connection>,
+    /// Solo Some(_) cuando storage_mode = "s3"
+    s3_cfg: Option<S3Cfg>,
 }
 
 /// Parse a timestamp string as emitted by DuckDB's `CAST(col AS VARCHAR)` for TIMESTAMPTZ columns.
@@ -107,21 +126,61 @@ fn parse_duckdb_timestamptz(s: &str) -> Option<DateTime<Utc>> {
 
 impl Db {
     pub fn open(config: &Config) -> Result<Self, DbError> {
-        if config.storage_mode != "local" {
-            return Err(DbError::Open("Solo se soporta storage_mode = 'local'".to_string()));
+        match config.storage_mode.as_str() {
+            "local" => {
+                let conn = Connection::open(&config.data_path)
+                    .map_err(|e| DbError::Open(e.to_string()))?;
+                let db = Db { conn: Mutex::new(conn), s3_cfg: None };
+                db.run_migrations()?;
+                db.seed_config()?;
+                Ok(db)
+            }
+
+            "motherduck" => {
+                let token = config.motherduck_token.as_deref()
+                    .expect("MOTHERDUCK_TOKEN es requerido para storage_mode=motherduck");
+                // MotherDuck lee el token desde la variable de entorno
+                std::env::set_var("motherduck_token", token);
+                let conn = Connection::open("md:evlogagent")
+                    .map_err(|e| DbError::Open(format!("MotherDuck: {}", e)))?;
+                let db = Db { conn: Mutex::new(conn), s3_cfg: None };
+                db.run_migrations()?;
+                db.seed_config()?;
+                Ok(db)
+            }
+
+            "s3" => {
+                let bucket = config.s3_bucket.clone()
+                    .expect("S3_BUCKET es requerido para storage_mode=s3");
+                let access_key_id = config.s3_access_key_id.clone()
+                    .expect("S3_ACCESS_KEY_ID es requerido para storage_mode=s3");
+                let secret_access_key = config.s3_secret_access_key.clone()
+                    .expect("S3_SECRET_ACCESS_KEY es requerido para storage_mode=s3");
+                let region = config.s3_region.clone()
+                    .unwrap_or_else(|| "us-east-1".to_string());
+
+                let conn = Connection::open("/tmp/evlogagent_buffer.duckdb")
+                    .map_err(|e| DbError::Open(format!("S3 buffer: {}", e)))?;
+
+                let s3_cfg = S3Cfg {
+                    bucket,
+                    region,
+                    endpoint: config.s3_endpoint.clone(),
+                    access_key_id,
+                    secret_access_key,
+                };
+
+                let db = Db { conn: Mutex::new(conn), s3_cfg: Some(s3_cfg) };
+                db.run_migrations()?;
+                db.seed_config()?;
+                Ok(db)
+            }
+
+            other => panic!(
+                "STORAGE_MODE inválido: '{}'. Valores válidos: local, motherduck, s3",
+                other
+            ),
         }
-
-        let conn = Connection::open(&config.data_path)
-            .map_err(|e| DbError::Open(e.to_string()))?;
-
-        let db = Db {
-            conn: Mutex::new(conn),
-        };
-
-        db.run_migrations()?;
-        db.seed_config()?;
-
-        Ok(db)
     }
 
     pub fn run_migrations(&self) -> Result<(), DbError> {
@@ -882,6 +941,132 @@ impl Db {
             records.push(r.map_err(|e| DbError::Query(e.to_string()))?);
         }
         Ok(records)
+    }
+
+    // ─── S3 sync helpers ────────────────────────────────────────────────────
+
+    /// Construye un `S3Client` a partir de la config guardada en el struct.
+    fn build_s3_client(cfg: &S3Cfg) -> S3Client {
+        let creds = Credentials::new(
+            &cfg.access_key_id,
+            &cfg.secret_access_key,
+            None,
+            None,
+            "evlogagent",
+        );
+        let region = Region::new(cfg.region.clone());
+        let mut builder = aws_sdk_s3::Config::builder()
+            .credentials_provider(creds)
+            .region(region)
+            .behavior_version_latest();
+        if let Some(ref ep) = cfg.endpoint {
+            builder = builder.endpoint_url(ep.clone());
+        }
+        S3Client::from_conf(builder.build())
+    }
+
+    /// Exporta la tabla `logs` a Parquet y sube el archivo a S3.
+    /// No-op silencioso si el modo no es s3.
+    pub async fn sync_to_s3(&self) -> Result<(), DbError> {
+        let cfg = match self.s3_cfg.as_ref() {
+            Some(c) => c,
+            None => return Ok(()),
+        };
+
+        // 1. Exportar a Parquet local
+        let export_path = "/tmp/evlogagent_export.parquet";
+        let row_count: i64 = {
+            let conn = self.conn.lock()
+                .map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+            conn.execute_batch(&format!(
+                "COPY (SELECT * FROM logs) TO '{}' (FORMAT PARQUET)",
+                export_path
+            )).map_err(|e| DbError::Query(format!("COPY to parquet: {}", e)))?;
+            let mut stmt = conn.prepare("SELECT COUNT(*) FROM logs")
+                .map_err(|e| DbError::Query(e.to_string()))?;
+            stmt.query_row([], |row| row.get(0))
+                .map_err(|e| DbError::Query(e.to_string()))?
+        };
+
+        // 2. Subir a S3
+        let client = Self::build_s3_client(cfg);
+        let file = tokio::fs::File::open(export_path).await
+            .map_err(|e| DbError::Query(format!("S3 sync: abrir parquet: {}", e)))?;
+        let file_len = file.metadata().await
+            .map_err(|e| DbError::Query(format!("S3 sync: metadata: {}", e)))?;
+        let byte_stream = aws_sdk_s3::primitives::ByteStream::read_from()
+            .path(export_path)
+            .build()
+            .await
+            .map_err(|e| DbError::Query(format!("S3 sync: ByteStream: {}", e)))?;
+        client
+            .put_object()
+            .bucket(&cfg.bucket)
+            .key("logs/latest.parquet")
+            .content_length(file_len.len() as i64)
+            .body(byte_stream)
+            .send()
+            .await
+            .map_err(|e| DbError::Query(format!("S3 sync: put_object: {}", e)))?;
+
+        tracing::info!("S3 sync: exportadas {} filas a s3://{}/logs/latest.parquet", row_count, cfg.bucket);
+        Ok(())
+    }
+
+    /// Descarga `logs/latest.parquet` de S3 e importa a la tabla `logs`.
+    /// Si el objeto no existe (primer arranque) retorna Ok sin error.
+    /// No-op silencioso si el modo no es s3.
+    pub async fn load_from_s3(&self) -> Result<(), DbError> {
+        let cfg = match self.s3_cfg.as_ref() {
+            Some(c) => c,
+            None => return Ok(()),
+        };
+
+        let client = Self::build_s3_client(cfg);
+        let download_path = "/tmp/evlogagent_download.parquet";
+
+        // 1. Intentar descargar
+        let get_result = client
+            .get_object()
+            .bucket(&cfg.bucket)
+            .key("logs/latest.parquet")
+            .send()
+            .await;
+
+        let response = match get_result {
+            Ok(r) => r,
+            Err(SdkError::ServiceError(se)) if matches!(se.err(), GetObjectError::NoSuchKey(_)) => {
+                tracing::info!("S3 load: no existe logs/latest.parquet — primer arranque");
+                return Ok(());
+            }
+            Err(e) => {
+                return Err(DbError::Query(format!("S3 load: get_object: {}", e)));
+            }
+        };
+
+        // 2. Guardar el archivo
+        let bytes = response.body.collect().await
+            .map_err(|e| DbError::Query(format!("S3 load: leer body: {}", e)))?;
+        let mut file = tokio::fs::File::create(download_path).await
+            .map_err(|e| DbError::Query(format!("S3 load: crear archivo: {}", e)))?;
+        file.write_all(&bytes.into_bytes()).await
+            .map_err(|e| DbError::Query(format!("S3 load: escribir archivo: {}", e)))?;
+        file.flush().await
+            .map_err(|e| DbError::Query(format!("S3 load: flush: {}", e)))?;
+        drop(file);
+
+        // 3. Importar a la tabla
+        {
+            let conn = self.conn.lock()
+                .map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+            conn.execute_batch(&format!(
+                "INSERT INTO logs SELECT * FROM read_parquet('{}')",
+                download_path
+            )).map_err(|e| DbError::Query(format!("S3 load: insert from parquet: {}", e)))?;
+        }
+
+        tracing::info!("S3 load: logs restaurados desde s3://{}/logs/latest.parquet", cfg.bucket);
+        Ok(())
     }
 }
 
