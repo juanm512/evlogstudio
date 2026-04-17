@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  evlogstudio:
+    image: ghcr.io/juanm512/evlogstudio:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - evlog_data:/data
+    environment:
+      PORT: 8080
+      STORAGE_MODE: local
+      DATA_PATH: /data/logs.duckdb
+
+volumes:
+  evlog_data:

@@ -1,0 +1,10 @@
+target/
+!target/release/evlogstudio
+ui/node_modules/
+ui/.svelte-kit/
+static_ui/
+.git/
+*.md
+test_*.sh
+test_*.ps1
+*.duckdb

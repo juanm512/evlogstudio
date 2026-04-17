@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  evlogstudio:
+    image: ghcr.io/juanm512/evlogstudio:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: 8080
+      STORAGE_MODE: s3
+      S3_BUCKET: tu-bucket
+      S3_ENDPOINT: https://xxxx.r2.cloudflarestorage.com
+      S3_ACCESS_KEY_ID: tu-access-key
+      S3_SECRET_ACCESS_KEY: tu-secret-key
