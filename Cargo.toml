@@ -12,7 +12,7 @@ axum            = { version = "0.7", features = ["json", "macros"] }
 tokio           = { version = "1", features = ["full"] }
 serde           = { version = "1", features = ["derive"] }
 serde_json      = "1"
-duckdb          = { version = "1", features = ["bundled"] }
+duckdb          = { version = "1", features = ["bundled", "chrono"] }
 uuid            = { version = "1", features = ["v4"] }
 chrono          = { version = "0.4", features = ["serde"] }
 envy            = "0.4"
@@ -28,6 +28,7 @@ hex = "0.4"
 aws-sdk-s3  = { version = "1", features = ["behavior-version-latest"] }
 aws-config  = { version = "1", features = ["behavior-version-latest"] }
 tokio-util  = { version = "0.7", features = ["io"] }
+include_dir = "0.7"
 
 [dev-dependencies]
 axum-test       = "15"

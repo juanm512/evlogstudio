@@ -1,5 +1,5 @@
 use axum::{
-    extract::{State, Query},
+    extract::{State},
     http::StatusCode,
     response::{IntoResponse, Json},
 };
@@ -19,10 +19,6 @@ pub mod dto {
         pub password: String,
     }
 
-    #[derive(Deserialize)]
-    pub struct SetupQuery {
-        pub token: String,
-    }
 }
 
 pub async fn login_handler(
@@ -52,7 +48,13 @@ pub async fn login_handler(
     match create_jwt(&user, &state.jwt_secret) {
         Ok(token) => Ok((
             StatusCode::OK,
-            Json(json!({"token": token, "role": user.role})),
+            Json(json!({
+                "token": token,
+                "user": {
+                    "email": user.email,
+                    "role": user.role
+                }
+            })),
         )),
         Err(_) => Err(AppError::Internal("failed to create token".to_string())),
     }
@@ -60,35 +62,20 @@ pub async fn login_handler(
 
 pub async fn setup_get_handler(
     State(state): State<AppState>,
-    Query(query): Query<dto::SetupQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     match state.db.count_users() {
-        Ok(0) => {}
-        _ => return Err(AppError::NotFound),
-    }
-
-    match state.db.get_config_value("setup.token") {
-        Ok(Some(token)) if token == query.token => {
-            Ok((StatusCode::OK, Json(json!({"message": "ready"}))))
-        }
-        Ok(None) => Err(AppError::NotFound),
-        _ => Err(AppError::Unauthorized),
+        Ok(0) => Ok((StatusCode::OK, Json(json!({"setup_required": true})))),
+        _ => Err(AppError::NotFound),
     }
 }
 
 pub async fn setup_post_handler(
     State(state): State<AppState>,
-    Query(query): Query<dto::SetupQuery>,
     Json(payload): Json<dto::LoginReq>,
 ) -> Result<impl IntoResponse, AppError> {
     match state.db.count_users() {
         Ok(0) => {}
         _ => return Err(AppError::NotFound),
-    }
-
-    match state.db.get_config_value("setup.token") {
-        Ok(Some(token)) if token == query.token => {}
-        _ => return Err(AppError::Unauthorized),
     }
 
     if !payload.email.contains('@') || payload.password.len() < 8 {
@@ -97,7 +84,6 @@ pub async fn setup_post_handler(
 
     match state.db.create_user(&payload.email, &payload.password, "admin") {
         Ok(_) => {
-            let _ = state.db.set_config_value("setup.token", "");
             Ok((StatusCode::OK, Json(json!({"message": "admin created"}))))
         }
         Err(e) => Err(AppError::Internal(e.to_string())),

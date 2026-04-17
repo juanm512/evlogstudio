@@ -92,6 +92,7 @@ pub async fn get_logs(
 pub struct PollQuery {
     pub source: Option<String>,
     pub level: Option<String>,
+    pub search: Option<String>,
     /// ID of the last log seen by the client. Used to derive the `ingested_at` cutoff.
     pub since_id: Option<String>,
     /// ISO-8601 fallback cutoff when `since_id` is absent or unknown.
@@ -130,6 +131,7 @@ pub async fn poll_logs(
         .poll_logs(
             params.source.as_deref(),
             params.level.as_deref(),
+            params.search.as_deref(),
             params.since_id.as_deref(),
             since_ts,
             limit,
@@ -201,6 +203,12 @@ mod tests {
         let app_state = crate::AppState {
             db: Arc::new(db),
             jwt_secret,
+            sampling_config: Arc::new(tokio::sync::RwLock::new(crate::SamplingConfig {
+                enabled: false,
+                debug_rate: 10,
+                info_rate: 100,
+                warn_rate: 100,
+            })),
         };
 
         let app = Router::new()

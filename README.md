@@ -124,27 +124,13 @@ docker run -d \
 
 ## Initial Setup
 
-When starting the server for the first time (when no users are registered), you will see a banner in the terminal with a setup token:
+When starting the server for the first time (when no users are registered), simply open the server's URL in your browser. You will be automatically redirected to the setup page to create your initial administrator account. 
 
-```text
-    ╔══════════════════════════════════════════════════╗
-    ║  Initial setup required                          ║
-    ║                                                  ║
-    ║  Complete setup at:                              ║
-    ║  POST /setup?token=xxxxxxxx-xxxx-xxxx-xxxx-xxxx  ║
-    ╚══════════════════════════════════════════════════╝
-```
+Once created, you'll be logged in and directed to the logs dashboard.
 
-To complete the setup, you must create the first administrator user:
+> [!NOTE]
+> The setup page is only accessible if the user table is empty.
 
-```bash
-curl -X POST "http://localhost:8080/setup?token=YOUR_BANNER_TOKEN" \
-     -H "Content-Type: application/json" \
-     -d '{"email": "admin@example.com", "password": "a_secure_password"}'
-```
-
-> [!IMPORTANT]
-> If you lose the token or need to restart the process, the banner will only be shown if the user table is empty. If users already exist, the server will start normally without showing the token.
 
 ## API Reference
 
@@ -153,12 +139,13 @@ curl -X POST "http://localhost:8080/setup?token=YOUR_BANNER_TOKEN" \
 - **Auth**: None
 - **Response**: `200 OK`
 ```json
-{"status": "ok"}
+{"status": "ok", "setup_required": false}
 ```
 
 ### Initial Setup
+- **GET** `/setup`: Returns `200 OK` if setup is required, else `404`.
 - **POST** `/setup`
-- **Auth**: Query param `token`
+- **Auth**: None (only available when no users exist)
 - **Body**: `{"email": "...", "password": "..."}`
 - **Response**: `200 OK`
 ```json

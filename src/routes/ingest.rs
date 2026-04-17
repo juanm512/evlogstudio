@@ -4,16 +4,18 @@ use axum::{
     response::IntoResponse,
 };
 use serde_json::{Value, json};
-use std::sync::Arc;
-use crate::db::Db;
 use crate::ingest::normalize::normalize_batch;
 use crate::AppError;
 
+use crate::AppState;
+use rand::Rng;
+
 pub async fn ingest_handler(
-    State(db): State<Arc<Db>>,
+    State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Json(payload): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {
+    let db = &state.db;
     let auth_header = headers.get("Authorization").and_then(|h| h.to_str().ok());
     let token = match auth_header {
         Some(h) if h.starts_with("Bearer ") => &h[7..],
@@ -38,11 +40,42 @@ pub async fn ingest_handler(
         return Err(AppError::BadRequest("invalid payload".to_string()));
     }
 
-    match db.insert_logs(&logs) {
+    // Apply sampling
+    let sampling = state.sampling_config.read().await;
+    let filtered_logs = if sampling.enabled {
+        let mut rng = rand::thread_rng();
+        logs.into_iter().filter(|log| {
+            let rate = match log.level.as_deref() {
+                Some("debug") => sampling.debug_rate,
+                Some("info") => sampling.info_rate,
+                Some("warn") => sampling.warn_rate,
+                _ => 100, // error, fatal, or unknown are always 100%
+            };
+            if rate >= 100 {
+                true
+            } else if rate == 0 {
+                false
+            } else {
+                rng.gen_range(0..100) < rate
+            }
+        }).collect::<Vec<_>>()
+    } else {
+        logs
+    };
+
+    if filtered_logs.is_empty() {
+        return Ok((
+            StatusCode::OK,
+            axum::Json(json!({"inserted": 0}))
+        ));
+    }
+
+    match db.insert_logs(&filtered_logs) {
         Ok(inserted) => {
             let bg_db = db.clone();
+            let logs_for_inference = filtered_logs.clone();
             tokio::spawn(async move {
-                let entries = crate::ingest::schema::infer_schema(&logs);
+                let entries = crate::ingest::schema::infer_schema(&logs_for_inference);
                 if let Err(e) = bg_db.upsert_schema(&entries) {
                     tracing::error!("Error upserting schema: {}", e);
                 }

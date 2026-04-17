@@ -11,10 +11,19 @@ use std::sync::Arc;
 use tracing::{info, Level};
 use tracing_subscriber::EnvFilter;
 
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct SamplingConfig {
+    pub enabled: bool,
+    pub debug_rate: u8,
+    pub info_rate: u8,
+    pub warn_rate: u8,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<db::Db>,
     pub jwt_secret: String,
+    pub sampling_config: Arc<tokio::sync::RwLock<SamplingConfig>>,
 }
 
 impl axum::extract::FromRef<AppState> for Arc<db::Db> {
@@ -59,22 +68,25 @@ async fn main() {
         panic!("Error al inicializar jwt secret: {}", e);
     });
 
+    let sampling_config = Arc::new(tokio::sync::RwLock::new(SamplingConfig {
+        enabled: false,
+        debug_rate: 10,
+        info_rate: 100,
+        warn_rate: 100,
+    }));
+
     let app_state = AppState {
         db: shared_db.clone(),
         jwt_secret,
+        sampling_config: sampling_config.clone(),
     };
-
-    // Imprimir banner si corresponde (primer arranque)
-    ensure_initial_setup(&shared_db);
 
     info!("evlogstudio listening on {}:{}", cfg.host, cfg.port);
     info!("storage: {}", cfg.storage_mode);
-    if cfg.storage_mode == "local" {
-        info!("database ready at {}", cfg.data_path);
-    }
 
     // Arrancar tareas de fondo
     start_retention_job(shared_db.clone());
+    start_sampling_refresh_job(shared_db.clone(), sampling_config.clone());
     if cfg.storage_mode == "s3" {
         start_s3_sync_job(shared_db.clone());
     }
@@ -89,28 +101,6 @@ async fn main() {
     axum::serve(listener, app).await.unwrap_or_else(|e| {
         panic!("Error al iniciar el servidor Axum: {}", e);
     });
-}
-
-/// Verifica si es necesario el setup inicial y muestra el banner
-fn ensure_initial_setup(db: &Arc<db::Db>) {
-    let user_count = db.count_users().unwrap_or_else(|e| {
-        panic!("Error al contar usuarios: {}", e);
-    });
-
-    if user_count == 0 {
-        let setup_token = uuid::Uuid::new_v4().to_string();
-        db.set_config_value("setup.token", &setup_token).unwrap_or_else(|e| {
-            panic!("Error al guardar setup token: {}", e);
-        });
-        println!("    ╔══════════════════════════════════════════════════╗");
-        println!("    ║  Initial setup required                          ║");
-        println!("    ║                                                  ║");
-        println!("    ║  Complete setup at:                              ║");
-        println!("    ║  POST /setup?token={:<30}║", setup_token);
-        println!("    ║                                                  ║");
-        println!("    ║  This token expires in 24 hours.                 ║");
-        println!("    ╚══════════════════════════════════════════════════╝");
-    }
 }
 
 /// Arranca el job de limpieza de logs antiguos segun retencion
@@ -141,6 +131,25 @@ fn start_s3_sync_job(db: Arc<db::Db>) {
                 Ok(()) => tracing::info!("S3 sync job: ok"),
                 Err(e) => tracing::error!("S3 sync job: error: {}", e),
             }
+        }
+    });
+}
+
+/// Actualiza el cache de sampling cada 60s
+fn start_sampling_refresh_job(db: Arc<db::Db>, cache: Arc<tokio::sync::RwLock<SamplingConfig>>) {
+    tokio::spawn(async move {
+        loop {
+            match db.get_all_config() {
+                Ok(map) => {
+                    let mut lock = cache.write().await;
+                    lock.enabled = map.get("sampling.enabled").map(|v| v == "true").unwrap_or(false);
+                    lock.debug_rate = map.get("sampling.debug_rate").and_then(|v| v.parse().ok()).unwrap_or(10);
+                    lock.info_rate = map.get("sampling.info_rate").and_then(|v| v.parse().ok()).unwrap_or(100);
+                    lock.warn_rate = map.get("sampling.warn_rate").and_then(|v| v.parse().ok()).unwrap_or(100);
+                }
+                Err(e) => tracing::error!("Sampling refresh job: error: {}", e),
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         }
     });
 }

@@ -1,3 +1,9 @@
 /target
 *.duckdb
 *.duckdb.wal
+
+# SvelteKit
+/static_ui/
+/ui/node_modules/
+/ui/.svelte-kit/
+/ui/build/

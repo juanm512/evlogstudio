@@ -13,6 +13,7 @@ use aws_sdk_s3::{
 };
 use tokio::io::AsyncWriteExt;
 
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserRecord {
     pub id: String,
@@ -102,27 +103,6 @@ pub struct Db {
     s3_cfg: Option<S3Cfg>,
 }
 
-/// Parse a timestamp string as emitted by DuckDB's `CAST(col AS VARCHAR)` for TIMESTAMPTZ columns.
-/// DuckDB may produce RFC3339, `"YYYY-MM-DD HH:MM:SS+HH"`, `"YYYY-MM-DDT HH:MM:SS"`, or plain
-/// `"YYYY-MM-DD HH:MM:SS"`. Returns `None` if none of the known formats match.
-fn parse_duckdb_timestamptz(s: &str) -> Option<DateTime<Utc>> {
-    // Try RFC3339 first (most precise, includes +00:00 or Z)
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
-        return Some(dt.with_timezone(&Utc));
-    }
-    // DuckDB's default VARCHAR format for timestamps with timezone: "YYYY-MM-DD HH:MM:SS+HH"
-    if let Ok(dt) = chrono::DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%z") {
-        return Some(dt.with_timezone(&Utc));
-    }
-    // Without timezone offset (treat as UTC)
-    if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
-        return Some(ndt.and_utc());
-    }
-    if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
-        return Some(ndt.and_utc());
-    }
-    None
-}
 
 impl Db {
     pub fn open(config: &Config) -> Result<Self, DbError> {
@@ -186,14 +166,14 @@ impl Db {
     pub fn run_migrations(&self) -> Result<(), DbError> {
         let conn = self.conn.lock().map_err(|e| DbError::Migration(format!("Mutex envenenado: {}", e)))?;
 
+        conn.execute_batch(schema::CREATE_SOURCES)
+            .map_err(|e| DbError::Migration(format!("sources: {}", e)))?;
+
         conn.execute_batch(schema::CREATE_LOGS)
             .map_err(|e| DbError::Migration(format!("logs: {}", e)))?;
 
         conn.execute_batch(schema::CREATE_SCHEMA_INFERENCE)
             .map_err(|e| DbError::Migration(format!("_schema: {}", e)))?;
-
-        conn.execute_batch(schema::CREATE_SOURCES)
-            .map_err(|e| DbError::Migration(format!("sources: {}", e)))?;
 
         conn.execute_batch(schema::CREATE_INGEST_TOKENS)
             .map_err(|e| DbError::Migration(format!("ingest_tokens: {}", e)))?;
@@ -220,6 +200,21 @@ impl Db {
             []
         ).map_err(|e| DbError::Query(format!("seed sampling.enabled: {}", e)))?;
 
+        conn.execute(
+            "INSERT INTO config (key, value) VALUES ('sampling.debug_rate', '10') ON CONFLICT (key) DO NOTHING",
+            []
+        ).map_err(|e| DbError::Query(format!("seed sampling.debug_rate: {}", e)))?;
+
+        conn.execute(
+            "INSERT INTO config (key, value) VALUES ('sampling.info_rate', '100') ON CONFLICT (key) DO NOTHING",
+            []
+        ).map_err(|e| DbError::Query(format!("seed sampling.info_rate: {}", e)))?;
+
+        conn.execute(
+            "INSERT INTO config (key, value) VALUES ('sampling.warn_rate', '100') ON CONFLICT (key) DO NOTHING",
+            []
+        ).map_err(|e| DbError::Query(format!("seed sampling.warn_rate: {}", e)))?;
+
         Ok(())
     }
 
@@ -238,17 +233,14 @@ impl Db {
 
             for log in logs {
                 let fields_json = log.fields.to_string(); // fields serializado a JSON
-                let ts_str = log.timestamp.to_rfc3339();
-                let ing_str = log.ingested_at.to_rfc3339();
-                
                 stmt.execute(duckdb::params![
                     &log.id,
-                    &ts_str,
+                    &log.timestamp,
                     &log.source,
                     &log.level,
                     &log.message,
                     &fields_json,
-                    &ing_str
+                    &log.ingested_at
                 ]).map_err(|e| DbError::Query(format!("Execute statement error: {}", e)))?;
                 
                 count += 1;
@@ -269,7 +261,7 @@ impl Db {
     pub fn query_logs(&self, params: &LogQueryParams) -> Result<Vec<crate::ingest::normalize::NormalizedLog>, DbError> {
         let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
         
-        let mut query = "SELECT id, CAST(timestamp AS VARCHAR), source, level, message, fields, CAST(ingested_at AS VARCHAR) FROM logs WHERE 1=1".to_string();
+        let mut query = "SELECT id, timestamp, source, level, message, fields, ingested_at FROM logs WHERE 1=1".to_string();
         let mut args: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
 
         if let Some(ref s) = params.source {
@@ -289,7 +281,7 @@ impl Db {
             args.push(Box::new(t.to_rfc3339()));
         }
         if let Some(ref search) = params.search {
-            query.push_str(" AND message LIKE ?");
+            query.push_str(" AND lower(message) LIKE lower(?)");
             args.push(Box::new(format!("%{}%", search)));
         }
         if let Some(ref c) = params.cursor {
@@ -310,24 +302,14 @@ impl Db {
             let fields_str: String = row.get(5)?;
             let fields = serde_json::from_str(&fields_str).unwrap_or(serde_json::Value::Null);
 
-            let ts_str: String = row.get(1)?;
-            let timestamp = chrono::DateTime::parse_from_rfc3339(&ts_str)
-                .map(|d| d.with_timezone(&Utc))
-                .unwrap_or_default();
-            
-            let ing_str: String = row.get(6)?;
-            let ingested_at = chrono::DateTime::parse_from_rfc3339(&ing_str)
-                .map(|d| d.with_timezone(&Utc))
-                .unwrap_or_default();
-
             Ok(crate::ingest::normalize::NormalizedLog {
                 id: row.get(0)?,
-                timestamp,
+                timestamp: row.get(1)?,
                 source: row.get(2)?,
                 level: row.get(3)?,
                 message: row.get(4)?,
                 fields,
-                ingested_at,
+                ingested_at: row.get(6)?,
             })
         }).map_err(|e| DbError::Query(e.to_string()))?;
 
@@ -390,7 +372,7 @@ impl Db {
         let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
 
         let mut args: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
-        let mut query = "SELECT source, field_path, field_type, seen_count, CAST(last_seen AS VARCHAR) FROM _schema".to_string();
+        let mut query = "SELECT source, field_path, field_type, seen_count, last_seen FROM _schema".to_string();
 
         if let Some(s) = source {
             query.push_str(" WHERE source = ?");
@@ -403,17 +385,12 @@ impl Db {
         let sql_args: Vec<&dyn duckdb::ToSql> = args.iter().map(|b| b.as_ref()).collect();
 
         let row_iter = stmt.query_map(sql_args.as_slice(), |row| {
-            let last_seen_str: String = row.get(4)?;
-            let last_seen = chrono::DateTime::parse_from_rfc3339(&last_seen_str)
-                .map(|d| d.with_timezone(&Utc))
-                .ok();
-
             Ok(crate::ingest::schema::SchemaEntry {
                 source: row.get(0)?,
                 field_path: row.get(1)?,
                 field_type: row.get(2)?,
                 seen_count: row.get(3)?,
-                last_seen,
+                last_seen: row.get(4).ok(),
             })
         }).map_err(|e| DbError::Query(e.to_string()))?;
 
@@ -464,6 +441,37 @@ impl Db {
         
         stmt.execute([key, value, value]).map_err(|e| DbError::Query(e.to_string()))?;
         Ok(())
+    }
+
+    pub fn get_all_config(&self) -> Result<std::collections::HashMap<String, String>, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare("SELECT key, value FROM config ORDER BY key")
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }).map_err(|e| DbError::Query(e.to_string()))?;
+
+        let mut map = std::collections::HashMap::new();
+        for row in rows {
+            let (k, v) = row.map_err(|e| DbError::Query(e.to_string()))?;
+            map.insert(k, v);
+        }
+        Ok(map)
+    }
+
+    pub fn delete_all_logs(&self) -> Result<i64, DbError> {
+        let mut conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let tx = conn.transaction().map_err(|e| DbError::Query(e.to_string()))?;
+
+        let count: i64 = tx.query_row("SELECT COUNT(*) FROM logs", [], |row| row.get(0))
+            .map_err(|e| DbError::Query(e.to_string()))?;
+
+        tx.execute("DELETE FROM logs", [])
+            .map_err(|e| DbError::Query(e.to_string()))?;
+
+        tx.commit().map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(count)
     }
 
     pub fn get_or_create_jwt_secret(&self) -> Result<String, DbError> {
@@ -541,17 +549,16 @@ impl Db {
 
     pub fn list_users(&self) -> Result<Vec<UserPublicRecord>, DbError> {
         let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
-        let mut stmt = conn.prepare("SELECT id, email, role, CAST(created_at AS VARCHAR), CAST(last_login AS VARCHAR) FROM users ORDER BY created_at ASC")
+        let mut stmt = conn.prepare("SELECT id, email, role, created_at, last_login FROM users ORDER BY created_at ASC")
             .map_err(|e| DbError::Query(e.to_string()))?;
-        
+
         let row_iter = stmt.query_map([], |row| {
-            let parse_time = |s: Option<String>| s.and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).map(|d| d.with_timezone(&Utc)).ok());
             Ok(UserPublicRecord {
                 id: row.get(0)?,
                 email: row.get(1)?,
                 role: row.get(2)?,
-                created_at: parse_time(row.get(3)?),
-                last_login: parse_time(row.get(4)?),
+                created_at: row.get(3).ok(),
+                last_login: row.get(4).ok(),
             })
         }).map_err(|e| DbError::Query(e.to_string()))?;
 
@@ -614,18 +621,16 @@ impl Db {
 
     pub fn list_sources(&self) -> Result<Vec<SourceRecord>, DbError> {
         let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
-        let mut stmt = conn.prepare("SELECT id, name, description, retention_days, CAST(created_at AS VARCHAR) FROM sources ORDER BY created_at DESC")
+        let mut stmt = conn.prepare("SELECT id, name, description, retention_days, created_at FROM sources ORDER BY created_at DESC")
             .map_err(|e| DbError::Query(e.to_string()))?;
         
         let row_iter = stmt.query_map([], |row| {
-            let created_at_str: Option<String> = row.get(4)?;
-            let created_at = created_at_str.and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).map(|d| d.with_timezone(&Utc)).ok());
             Ok(SourceRecord {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 description: row.get(2)?,
                 retention_days: row.get(3)?,
-                created_at,
+                created_at: row.get(4)?,
             })
         }).map_err(|e| DbError::Query(e.to_string()))?;
 
@@ -637,9 +642,35 @@ impl Db {
     }
 
     pub fn delete_source(&self, id: &str) -> Result<bool, DbError> {
-        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
-        let mut stmt = conn.prepare("DELETE FROM sources WHERE id = ?").map_err(|e| DbError::Query(e.to_string()))?;
-        let count = stmt.execute([id]).map_err(|e| DbError::Query(e.to_string()))?;
+        let mut conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let tx = conn.transaction().map_err(|e| DbError::Query(format!("Transaction error: {}", e)))?;
+
+        // 1. Obtener nombre del source para limpiar tablas relacionadas
+        let name_res: Result<String, _> = tx.query_row("SELECT name FROM sources WHERE id = ?", [id], |row| row.get(0));
+        
+        let name = match name_res {
+            Ok(n) => n,
+            Err(duckdb::Error::QueryReturnedNoRows) => return Ok(false),
+            Err(e) => return Err(DbError::Query(e.to_string())),
+        };
+
+        // 2. Limpiar logs
+        tx.execute("DELETE FROM logs WHERE source = ?", [&name])
+            .map_err(|e| DbError::Query(format!("logs cleanup: {}", e)))?;
+
+        // 3. Limpiar tokens
+        tx.execute("DELETE FROM ingest_tokens WHERE source = ?", [&name])
+            .map_err(|e| DbError::Query(format!("tokens cleanup: {}", e)))?;
+
+        // 4. Limpiar esquema
+        tx.execute("DELETE FROM _schema WHERE source = ?", [&name])
+            .map_err(|e| DbError::Query(format!("schema cleanup: {}", e)))?;
+
+        // 5. Eliminar source
+        let count = tx.execute("DELETE FROM sources WHERE id = ?", [id])
+            .map_err(|e| DbError::Query(format!("source deletion: {}", e)))?;
+
+        tx.commit().map_err(|e| DbError::Query(format!("commit deletion: {}", e)))?;
         Ok(count > 0)
     }
 
@@ -671,7 +702,7 @@ impl Db {
     pub fn list_ingest_tokens(&self, source_id: Option<&str>) -> Result<Vec<IngestTokenRecord>, DbError> {
         let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
         
-        let mut query = "SELECT id, name, source, created_by, CAST(created_at AS VARCHAR), CAST(last_used AS VARCHAR), CAST(revoked_at AS VARCHAR) FROM ingest_tokens".to_string();
+        let mut query = "SELECT id, name, source, created_by, created_at, last_used, revoked_at FROM ingest_tokens".to_string();
         let mut args: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
         
         if let Some(s) = source_id {
@@ -684,15 +715,14 @@ impl Db {
         let sql_args: Vec<&dyn duckdb::ToSql> = args.iter().map(|b| b.as_ref()).collect();
             
         let row_iter = stmt.query_map(sql_args.as_slice(), |row| {
-            let parse_time = |s: Option<String>| s.and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).map(|d| d.with_timezone(&Utc)).ok());
             Ok(IngestTokenRecord {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 source: row.get(2)?,
                 created_by: row.get(3)?,
-                created_at: parse_time(row.get(4)?),
-                last_used: parse_time(row.get(5)?),
-                revoked_at: parse_time(row.get(6)?),
+                created_at: row.get(4)?,
+                last_used: row.get(5)?,
+                revoked_at: row.get(6)?,
             })
         }).map_err(|e| DbError::Query(e.to_string()))?;
 
@@ -705,9 +735,17 @@ impl Db {
 
     pub fn revoke_ingest_token(&self, id: &str) -> Result<bool, DbError> {
         let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
-        let mut stmt = conn.prepare("UPDATE ingest_tokens SET revoked_at = now() WHERE id = ? AND revoked_at IS NULL").map_err(|e| DbError::Query(e.to_string()))?;
-        let count = stmt.execute([id]).map_err(|e| DbError::Query(e.to_string()))?;
-        Ok(count > 0)
+        
+        // Usamos RETURNING id para confirmar que se actualizó una fila
+        let mut stmt = conn.prepare("UPDATE ingest_tokens SET revoked_at = now() WHERE id = ? AND revoked_at IS NULL RETURNING id").map_err(|e| DbError::Query(e.to_string()))?;
+        let mut rows = stmt.query([id]).map_err(|e| DbError::Query(e.to_string()))?;
+        
+        let success = rows.next().map_err(|e| DbError::Query(e.to_string()))?.is_some();
+        if !success {
+            // Log para debug (esto saldrá en los logs de la app)
+            tracing::warn!("Fallo al revocar token: id {} no encontrado o ya revocado", id);
+        }
+        Ok(success)
     }
 
     pub fn verify_ingest_token(&self, raw_token: &str) -> Result<Option<String>, DbError> {
@@ -851,6 +889,7 @@ impl Db {
         &self,
         source: Option<&str>,
         level: Option<&str>,
+        search: Option<&str>,
         since_id: Option<&str>,
         since_timestamp: Option<DateTime<Utc>>,
         limit: u32,
@@ -889,7 +928,7 @@ impl Db {
 
         // --- Build full query ---
         let mut query = format!(
-            "SELECT id, CAST(timestamp AS VARCHAR), source, level, message, fields, CAST(ingested_at AS VARCHAR) \
+            "SELECT id, timestamp, source, level, message, fields, ingested_at \
              FROM logs WHERE {}",
             cutoff_clause
         );
@@ -902,6 +941,10 @@ impl Db {
             query.push_str(" AND level = ?");
             args.push(Box::new(l.to_string()));
         }
+        if let Some(s) = search {
+            query.push_str(" AND lower(message) LIKE lower(?)");
+            args.push(Box::new(format!("%{}%", s)));
+        }
 
         query.push_str(" ORDER BY ingested_at ASC LIMIT ?");
         args.push(Box::new(i64::from(limit)));
@@ -910,29 +953,17 @@ impl Db {
         let sql_args: Vec<&dyn duckdb::ToSql> = args.iter().map(|b| b.as_ref()).collect();
 
         let row_iter = stmt.query_map(sql_args.as_slice(), |row| {
-            let ts_str: String = row.get(1)?;
-            let timestamp = chrono::DateTime::parse_from_rfc3339(&ts_str)
-                .map(|d| d.with_timezone(&Utc))
-                .or_else(|_| {
-                    chrono::NaiveDateTime::parse_from_str(&ts_str, "%Y-%m-%d %H:%M:%S")
-                        .map(|ndt| ndt.and_utc())
-                })
-                .unwrap_or_default();
-
-            let ing_str: String = row.get(6)?;
-            let ingested_at = parse_duckdb_timestamptz(&ing_str).unwrap_or_default();
-
-            let fields_str: String = row.get(5)?;
-            let fields = serde_json::from_str(&fields_str).unwrap_or(serde_json::Value::Null);
-
             Ok(LogRecord {
                 id: row.get(0)?,
-                timestamp,
+                timestamp: row.get(1)?,
                 source: row.get(2)?,
-                level: row.get(3)?,
-                message: row.get(4)?,
-                fields,
-                ingested_at,
+                level: row.get(3).ok(),
+                message: row.get(4).ok(),
+                fields: {
+                    let s: String = row.get(5)?;
+                    serde_json::from_str(&s).unwrap_or_default()
+                },
+                ingested_at: row.get(6)?,
             })
         }).map_err(|e| DbError::Query(e.to_string()))?;
 
@@ -941,6 +972,73 @@ impl Db {
             records.push(r.map_err(|e| DbError::Query(e.to_string()))?);
         }
         Ok(records)
+    }
+
+    pub fn query_raw_flexible(&self, sql: &str) -> Result<Vec<serde_json::Value>, DbError> {
+        // Recover from a previously poisoned mutex instead of propagating the error.
+        // A poisoned mutex means a previous thread panicked while holding the guard;
+        // the Connection itself is still usable in DuckDB's case.
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+
+        // STEP 1 — get column names via DESCRIBE so we never call column_names()
+        // on an un-executed statement (which panics internally via .expect()).
+        let describe_sql = format!("DESCRIBE {}", sql.trim_end_matches(';'));
+        let col_names: Vec<String> = {
+            let mut d = conn.prepare(&describe_sql)
+                .map_err(|e| DbError::Query(format!("DESCRIBE: {}", e)))?;
+            let iter = d.query_map([], |row| row.get::<_, String>(0))
+                .map_err(|e| DbError::Query(e.to_string()))?;
+            let mut names = Vec::new();
+            for r in iter {
+                names.push(r.map_err(|e| DbError::Query(e.to_string()))?);
+            }
+            names
+        };
+
+
+        // STEP 2 — execute the real query with query_map (no column_names() call)
+        let mut stmt = conn.prepare(sql).map_err(|e| DbError::Query(e.to_string()))?;
+        let iter = stmt.query_map([], |row| {
+            let mut map = serde_json::Map::new();
+            for (i, col_name) in col_names.iter().enumerate() {
+                let val: serde_json::Value =
+                    if let Ok(Some(v)) = row.get::<_, Option<f64>>(i) { serde_json::json!(v) }
+                    else if let Ok(Some(v)) = row.get::<_, Option<i64>>(i) { serde_json::json!(v) }
+                    else if let Ok(Some(v)) = row.get::<_, Option<String>>(i) { serde_json::json!(v) }
+                    else { serde_json::Value::Null };
+                map.insert(col_name.clone(), val);
+            }
+            Ok(serde_json::Value::Object(map))
+        }).map_err(|e| DbError::Query(e.to_string()))?;
+
+        let mut results = Vec::new();
+        for r in iter {
+            results.push(r.map_err(|e| DbError::Query(e.to_string()))?);
+        }
+        Ok(results)
+    }
+
+    pub fn query_raw(&self, sql: &str) -> Result<Vec<crate::ingest::normalize::NormalizedLog>, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare(sql).map_err(|e| DbError::Query(e.to_string()))?;
+        let log_iter = stmt.query_map([], |row| {
+            let fields_str: String = row.get(5)?;
+            let fields = serde_json::from_str(&fields_str).unwrap_or(serde_json::Value::Null);
+            Ok(crate::ingest::normalize::NormalizedLog {
+                id: row.get(0)?,
+                timestamp: row.get(1)?,
+                source: row.get(2)?,
+                level: row.get(3)?,
+                message: row.get(4)?,
+                fields,
+                ingested_at: row.get(6)?,
+            })
+        }).map_err(|e| DbError::Query(e.to_string()))?;
+        let mut logs = Vec::new();
+        for log in log_iter {
+            logs.push(log.map_err(|e| DbError::Query(e.to_string()))?);
+        }
+        Ok(logs)
     }
 
     // ─── S3 sync helpers ────────────────────────────────────────────────────

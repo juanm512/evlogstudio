@@ -172,6 +172,12 @@ mod tests {
         let app_state = crate::AppState {
             db: Arc::new(db),
             jwt_secret,
+            sampling_config: Arc::new(tokio::sync::RwLock::new(crate::SamplingConfig {
+                enabled: false,
+                debug_rate: 10,
+                info_rate: 100,
+                warn_rate: 100,
+            })),
         };
 
         let app = Router::new()
@@ -274,6 +280,12 @@ mod tests {
         let app_state = crate::AppState {
             db: Arc::new(db),
             jwt_secret,
+            sampling_config: Arc::new(tokio::sync::RwLock::new(crate::SamplingConfig {
+                enabled: false,
+                debug_rate: 10,
+                info_rate: 100,
+                warn_rate: 100,
+            })),
         };
 
         let app = Router::new()

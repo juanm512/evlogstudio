@@ -6,11 +6,13 @@ use crate::db::Db;
 #[derive(Serialize)]
 pub struct HealthResponse {
     status: &'static str,
-    count: usize,
+    setup_required: bool,
 }
 
 pub async fn health_handler(State(db): State<Arc<Db>>) -> impl IntoResponse {
-    tracing::info!("Health check");
-    let count = db.count_logs().unwrap_or(0);
-    Json(HealthResponse { status: "ok", count })
+    let user_count = db.count_users().unwrap_or(0);
+    Json(HealthResponse { 
+        status: "ok", 
+        setup_required: user_count == 0 
+    })
 }
