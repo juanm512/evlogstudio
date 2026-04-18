@@ -2,9 +2,19 @@
 set -e
 
 REPO="juanm512/evlogstudio"
-INSTALL_DIR="/usr/local/bin"
 SERVICE_NAME="evlogstudio"
-DATA_DIR="/var/lib/evlogstudio"
+
+# Recomendado: curl ... -o /tmp/install.sh && sudo bash /tmp/install.sh
+# Sin root:    curl ... -o /tmp/install.sh && bash /tmp/install.sh
+
+if [ "$(id -u)" = "0" ]; then
+  INSTALL_DIR="/usr/local/bin"
+  DATA_DIR="/var/lib/evlogstudio"
+else
+  INSTALL_DIR="$HOME/.local/bin"
+  DATA_DIR="$HOME/.local/share/evlogstudio"
+  mkdir -p "$INSTALL_DIR"
+fi
 
 # ── detección de OS y arquitectura ──────────────────────────────
 

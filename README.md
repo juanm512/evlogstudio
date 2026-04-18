@@ -7,8 +7,20 @@ A log ingest and query server, self-hosted, single binary, configurable via envi
 ### One-line install (Linux / macOS)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/juanm512/evlogstudio/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/juanm512/evlogstudio/main/install.sh \
+  -o /tmp/install.sh && sudo bash /tmp/install.sh
 ```
+
+> Note: downloading before running with sudo avoids pipe permission issues.
+
+### Without sudo (installs to ~/.local/bin)
+
+```bash
+curl -sSL https://raw.githubusercontent.com/juanm512/evlogstudio/main/install.sh \
+  -o /tmp/install.sh && bash /tmp/install.sh
+```
+
+The installer auto-detects permissions and installs to `~/.local/bin` if not running as root.
 
 The installer will:
 1. Detect your OS and architecture
