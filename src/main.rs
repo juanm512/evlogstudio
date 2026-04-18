@@ -34,6 +34,12 @@ impl axum::extract::FromRef<AppState> for Arc<db::Db> {
 
 #[tokio::main]
 async fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && args[1] == "--version" {
+        println!("evlogstudio {}", env!("CARGO_PKG_VERSION"));
+        std::process::exit(0);
+    }
+
     // Inicializar tracing-subscriber con env-filter y default en INFO
     tracing_subscriber::fmt()
         .with_env_filter(

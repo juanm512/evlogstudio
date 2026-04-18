@@ -2,6 +2,64 @@
 
 A log ingest and query server, self-hosted, single binary, configurable via environment variables.
 
+## Installation
+
+### One-line install (Linux / macOS)
+
+```bash
+curl -sSL https://raw.githubusercontent.com/juanm512/evlogstudio/main/install.sh | bash
+```
+
+The installer will:
+1. Detect your OS and architecture
+2. Download the latest binary from GitHub Releases
+3. Ask for basic configuration (port, storage mode)
+4. Optionally install a systemd service (Linux only)
+5. Print the URL to open in your browser
+
+### Manual install
+
+Download the binary for your platform from
+https://github.com/juanm512/evlogstudio/releases/latest
+
+```
+Linux amd64:  evlogstudio-linux-amd64
+Linux arm64:  evlogstudio-linux-arm64
+macOS arm64:  evlogstudio-darwin-arm64
+macOS amd64:  evlogstudio-darwin-amd64
+```
+
+```bash
+chmod +x evlogstudio-linux-amd64
+PORT=8080 DATA_PATH=./logs.duckdb ./evlogstudio-linux-amd64
+```
+
+### Docker
+
+```bash
+docker run -d \
+  -p 8080:8080 \
+  -v evlog_data:/data \
+  ghcr.io/juanm512/evlogstudio:latest
+```
+
+### Version check
+
+```bash
+evlogstudio --version
+```
+
+## Upgrading
+
+Re-run the install script to upgrade to the latest version:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/juanm512/evlogstudio/main/install.sh | bash
+```
+
+Your data is preserved — the installer only replaces the binary.
+If using systemd, the service restarts automatically.
+
 ## Environment Variables
 
 The server is configured exclusively through environment variables:
