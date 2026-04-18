@@ -48,19 +48,21 @@ echo "Downloading evlogstudio..."
 
 # ── descarga ─────────────────────────────────────────────────────
 
-curl -sSL "$LATEST_URL" -o "/tmp/evlogstudio"
-chmod +x "/tmp/evlogstudio"
+TMPFILE=$(mktemp)
+curl -sSL "$LATEST_URL" -o "$TMPFILE"
+chmod +x "$TMPFILE"
 
 # ── verificar que funciona ────────────────────────────────────────
 
-if ! /tmp/evlogstudio --version 2>/dev/null; then
+if ! "$TMPFILE" --version 2>/dev/null; then
   echo "The downloaded binary is not responding. Check the release."
+  rm -f "$TMPFILE"
   exit 1
 fi
 
 # ── instalar ──────────────────────────────────────────────────────
 
-mv /tmp/evlogstudio "$INSTALL_DIR/evlogstudio"
+mv "$TMPFILE" "$INSTALL_DIR/evlogstudio"
 echo "Binary installed in $INSTALL_DIR/evlogstudio"
 
 # ── preguntar configuración ───────────────────────────────────────
@@ -139,3 +141,5 @@ echo "║  http://YOUR-IP:${PORT}                          ║"
 echo "║                                                  ║"
 echo "║  Docs: github.com/${REPO}                        ║"
 echo "╚══════════════════════════════════════════════════╝"
+
+rm -f "$TMPFILE"
