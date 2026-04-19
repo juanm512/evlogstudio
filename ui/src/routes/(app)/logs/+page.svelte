@@ -15,9 +15,17 @@
   const DEFAULT_COLUMNS = ['timestamp', 'source', 'level', 'message'];
 
   // ─── State ────────────────────────────────────────────────────────────────────
-  interface Filters { search: string; from: string; to: string; }
+  interface Filters {
+    search: string;
+    from: string;
+    to: string;
+    level: string;
+    method: string;
+    environment: string;
+    status: string;
+  }
 
-  let filters       = $state<Filters>({ search: '', from: '', to: '' });
+  let filters = $state<Filters>({ search: '', from: '', to: '', level: '', method: '', environment: '', status: '' });
   let conditions    = $state<FilterCondition[]>([]);
   let activeColumns = $state<string[]>(DEFAULT_COLUMNS);
   let selectedLog   = $state<Log | null>(null);
@@ -63,10 +71,14 @@
   // ─── Build query URL ──────────────────────────────────────────────────────────
   function buildLogsUrl(f: Filters, sources: string[], cur: string | null): string {
     const params = new URLSearchParams();
-    if (f.search) params.set('search', f.search);
-    if (f.from)   params.set('from', new Date(f.from).toISOString());
-    if (f.to)     params.set('to',   new Date(f.to).toISOString());
+    if (f.search)      params.set('search', f.search);
+    if (f.from)        params.set('from', new Date(f.from).toISOString());
+    if (f.to)          params.set('to',   new Date(f.to).toISOString());
     if (sources.length === 1) params.set('source', sources[0]);
+    if (f.level)       params.set('level', f.level);
+    if (f.method)      params.set('method', f.method);
+    if (f.environment) params.set('environment', f.environment);
+    if (f.status)      params.set('status', f.status);
     if (cur) params.set('cursor', cur);
     params.set('limit', '100');
     return `/api/logs?${params.toString()}`;
@@ -85,7 +97,10 @@
   }
 
   // Top-level DB columns — referenced directly, not via json_extract_string
-  const TOP_LEVEL_COLS = new Set(['level', 'source', 'message', 'timestamp']);
+  const TOP_LEVEL_COLS = new Set([
+    'level', 'source', 'message', 'timestamp',
+    'service', 'environment', 'method', 'path', 'status', 'duration_ms', 'request_id', 'error',
+  ]);
 
   function buildAdvancedSql(f: Filters, sources: string[], conds: FilterCondition[]): string {
     const parts: string[] = [];
@@ -130,7 +145,7 @@
       ? `WHERE ${parts.join(' AND ')}`
       : '';
 
-    return `SELECT id, timestamp, source, level, message, fields, ingested_at FROM logs ${where} ORDER BY timestamp DESC LIMIT 50`;
+    return `SELECT id, timestamp, source, service, environment, method, path, status, duration_ms, request_id, error, level, message, fields, ingested_at FROM logs ${where} ORDER BY timestamp DESC LIMIT 50`;
   }
 
   // ─── Sync Svelte store → rune ─────────────────────────────────────────────────
@@ -143,6 +158,7 @@
   // Reset pagination + live buffers whenever query params change
   $effect(() => {
     void filters.search; void filters.from; void filters.to;
+    void filters.level; void filters.method; void filters.environment; void filters.status;
     void sourcesValue.length;
     void conditions.length;
     cursor        = null;
@@ -192,7 +208,7 @@
 
   // ─── Logs query ───────────────────────────────────────────────────────────────
   const logsQuery = createQuery(() => ({
-    queryKey: ['logs', filters.search, filters.from, filters.to, ...sourcesValue, ...conditions.map(c => `${c.id}:${c.field}:${c.operator}:${c.value}`)],
+    queryKey: ['logs', filters.search, filters.from, filters.to, filters.level, filters.method, filters.environment, filters.status, ...sourcesValue, ...conditions.map(c => `${c.id}:${c.field}:${c.operator}:${c.value}`)],
     queryFn: async () => {
       if (conditions.length > 0) {
         const sql = buildAdvancedSql(filters, sourcesValue, conditions);

@@ -10,7 +10,8 @@
     onclose: () => void;
   }
 
-  const BASE_COLUMNS = ['timestamp', 'source', 'level', 'message'];
+  const BASE_COLUMNS     = ['timestamp', 'source', 'level', 'message'];
+  const FEATURED_COLUMNS = ['service', 'environment', 'method', 'path', 'status', 'duration_ms', 'request_id', 'error'];
 
   let { availableColumns, activeColumns, anchorTop, anchorRight, onchange, onclose }: Props = $props();
 
@@ -23,21 +24,28 @@
   }
 
   const COLUMN_LABELS: Record<string, string> = {
-    timestamp: 'Timestamp',
-    source: 'Source',
-    level: 'Level',
-    message: 'Message',
+    timestamp:   'Timestamp',
+    source:      'Source',
+    level:       'Level',
+    message:     'Message',
+    service:     'service',
+    environment: 'environment',
+    method:      'method',
+    path:        'path',
+    status:      'status',
+    duration_ms: 'duration_ms',
+    request_id:  'request_id',
+    error:       'error',
   };
 
   function labelFor(col: string): string {
     return COLUMN_LABELS[col] ?? col;
   }
 
-  // All displayed: base + extras
-  let allColumns = $derived([
-    ...BASE_COLUMNS,
-    ...availableColumns.filter(c => !BASE_COLUMNS.includes(c)),
-  ]);
+  // Schema columns: exclude base and featured (shown in their own section)
+  let schemaColumns = $derived(
+    availableColumns.filter(c => !BASE_COLUMNS.includes(c) && !FEATURED_COLUMNS.includes(c))
+  );
 
   let panelRef = $state<HTMLElement>();
 
@@ -71,24 +79,34 @@
     <span>Visible Columns</span>
   </div>
   <div class="picker-list">
-    {#each allColumns as col}
-      {@const locked = BASE_COLUMNS.includes(col)}
+    {#each BASE_COLUMNS as col}
       {@const active = activeColumns.includes(col)}
-      <label class="picker-row {locked ? 'locked' : ''}">
-        <input
-          type="checkbox"
-          checked={active}
-          disabled={locked}
-          onchange={() => toggle(col)}
-          class="picker-checkbox"
-          aria-label="Toggle column {labelFor(col)}"
-        />
+      <label class="picker-row locked">
+        <input type="checkbox" checked={active} disabled class="picker-checkbox" aria-label="Toggle column {labelFor(col)}" />
         <span class="picker-label">{labelFor(col)}</span>
-        {#if locked}
-          <span class="picker-lock">required</span>
-        {/if}
+        <span class="picker-lock">required</span>
       </label>
     {/each}
+
+    <div class="picker-section-label">Campos principales</div>
+    {#each FEATURED_COLUMNS as col}
+      {@const active = activeColumns.includes(col)}
+      <label class="picker-row">
+        <input type="checkbox" checked={active} onchange={() => toggle(col)} class="picker-checkbox" aria-label="Toggle column {labelFor(col)}" />
+        <span class="picker-label">{labelFor(col)}</span>
+      </label>
+    {/each}
+
+    {#if schemaColumns.length > 0}
+      <div class="picker-section-label">Campos del schema</div>
+      {#each schemaColumns as col}
+        {@const active = activeColumns.includes(col)}
+        <label class="picker-row">
+          <input type="checkbox" checked={active} onchange={() => toggle(col)} class="picker-checkbox" aria-label="Toggle column {labelFor(col)}" />
+          <span class="picker-label">{labelFor(col)}</span>
+        </label>
+      {/each}
+    {/if}
   </div>
   <div class="picker-footer">
     <button onclick={onclose} class="picker-close-btn" aria-label="Close column picker">Done</button>
@@ -148,6 +166,16 @@
     height: 14px;
     accent-color: var(--color-brand-primary);
     flex-shrink: 0;
+  }
+  .picker-section-label {
+    padding: 6px 12px 3px;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--color-text-muted);
+    border-top: 1px solid var(--color-border-dim);
+    margin-top: 2px;
   }
   .picker-label { flex: 1; font-family: var(--font-mono); font-size: 12px; }
   .picker-lock {

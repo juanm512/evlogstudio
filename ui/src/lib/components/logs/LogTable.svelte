@@ -17,10 +17,18 @@
   let { logs, activeColumns, selectedLog, onselect, scrollEl = $bindable(), schemaFields = [], onsort }: Props = $props();
 
   const COLUMN_HEADERS: Record<string, string> = {
-    timestamp: 'Timestamp',
-    source: 'Source',
-    level: 'Level',
-    message: 'Message',
+    timestamp:   'Timestamp',
+    source:      'Source',
+    level:       'Level',
+    message:     'Message',
+    service:     'Service',
+    environment: 'Env',
+    method:      'Method',
+    path:        'Path',
+    status:      'Status',
+    duration_ms: 'Duration',
+    request_id:  'Request ID',
+    error:       'Error',
   };
 
   function headerFor(col: string): string {
@@ -56,11 +64,13 @@
     return schemaFields.find(f => f.field_path === col)?.field_type ?? 'string';
   }
 
+  const TOP_LEVEL_LOG_COLS = new Set([
+    'timestamp','source','level','message',
+    'service','environment','method','path','status','duration_ms','request_id','error',
+  ]);
+
   function getSortValue(log: Log, col: string): unknown {
-    if (col === 'timestamp') return log.timestamp;
-    if (col === 'source')    return log.source ?? '';
-    if (col === 'level')     return log.level ?? '';
-    if (col === 'message')   return log.message ?? '';
+    if (TOP_LEVEL_LOG_COLS.has(col)) return (log as Record<string, unknown>)[col] ?? '';
     const parts = col.split('.');
     let current: unknown = log.fields ?? {};
     for (const part of parts) {

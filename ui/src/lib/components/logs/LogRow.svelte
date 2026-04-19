@@ -31,6 +31,10 @@
     return str.length > 40 ? str.slice(0, 40) + '…' : str;
   }
 
+  const TOP_LEVEL_LOG_COLS = new Set([
+    'service','environment','method','path','status','duration_ms','request_id','error',
+  ]);
+
   function getCellValue(col: string): string {
     if (col === 'timestamp') return formatTimestamp(log.timestamp);
     if (col === 'source') return log.source ?? '';
@@ -39,7 +43,24 @@
       const msg = log.message ?? '';
       return msg.length > 80 ? msg.slice(0, 80) + '…' : msg;
     }
+    if (col === 'duration_ms') {
+      return log.duration_ms != null ? `${log.duration_ms}ms` : '';
+    }
+    if (TOP_LEVEL_LOG_COLS.has(col)) {
+      const val = (log as Record<string, unknown>)[col];
+      if (val == null) return '';
+      return String(val);
+    }
     return getNestedValue(log.fields ?? {}, col);
+  }
+
+  function statusClass(status: number | null): string {
+    if (status == null) return '';
+    if (status >= 500) return 'status-5xx';
+    if (status >= 400) return 'status-4xx';
+    if (status >= 300) return 'status-3xx';
+    if (status >= 200) return 'status-2xx';
+    return '';
   }
 
   const levelBadge: Record<string, string> = {
@@ -81,6 +102,16 @@
         <span class="font-mono text-text-muted">{getCellValue(col)}</span>
       {:else if col === 'message'}
         <span class="font-mono text-text-secondary truncate max-w-[400px] block" title={log.message ?? ''}>{getCellValue(col)}</span>
+      {:else if col === 'status'}
+        {#if log.status != null}
+          <span class="status-badge {statusClass(log.status)}">{log.status}</span>
+        {:else}
+          <span class="font-mono text-text-muted">—</span>
+        {/if}
+      {:else if col === 'error'}
+        {#if log.error != null}
+          <span class="error-badge">error</span>
+        {/if}
       {:else}
         <span class="font-mono text-text-muted truncate max-w-[200px] block" title={getCellValue(col)}>{getCellValue(col) || '—'}</span>
       {/if}
@@ -132,4 +163,28 @@
   .badge-error  { background: color-mix(in srgb, #EF4444 12%, transparent); color: #EF4444; }
   .badge-fatal  { background: color-mix(in srgb, #991B1B 20%, transparent); color: #FCA5A5; }
   .badge-unknown { background: color-mix(in srgb, #71717A 12%, transparent); color: #71717A; }
+
+  .status-badge {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 1px 6px;
+  }
+  .status-2xx { background: color-mix(in srgb, #22C55E 12%, transparent); color: #22C55E; }
+  .status-3xx { background: color-mix(in srgb, #60A5FA 12%, transparent); color: #60A5FA; }
+  .status-4xx { background: color-mix(in srgb, #F59E0B 12%, transparent); color: #F59E0B; }
+  .status-5xx { background: color-mix(in srgb, #EF4444 12%, transparent); color: #EF4444; }
+
+  .error-badge {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 1px 6px;
+    background: color-mix(in srgb, #EF4444 12%, transparent);
+    color: #EF4444;
+  }
 </style>

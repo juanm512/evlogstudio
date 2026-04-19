@@ -1,10 +1,35 @@
 <script lang="ts">
-  import { SlidersHorizontal, X, Search, ListFilter } from 'lucide-svelte';
+  import { SlidersHorizontal, X, Search, ListFilter, ChevronDown, ChevronRight } from 'lucide-svelte';
   import ColumnPicker from './ColumnPicker.svelte';
   import AdvancedFilters from './AdvancedFilters.svelte';
   import CustomSelect from '../common/CustomSelect.svelte';
   import Modal from '../common/Modal.svelte';
   import type { SchemaField, FilterCondition } from '$lib/types';
+
+  const LEVEL_OPTIONS = [
+    { id: '',      label: 'All' },
+    { id: 'debug', label: 'debug' },
+    { id: 'info',  label: 'info' },
+    { id: 'warn',  label: 'warn' },
+    { id: 'error', label: 'error' },
+    { id: 'fatal', label: 'fatal' },
+  ];
+
+  const METHOD_OPTIONS = [
+    { id: '',        label: 'All' },
+    { id: 'GET',     label: 'GET' },
+    { id: 'POST',    label: 'POST' },
+    { id: 'PUT',     label: 'PUT' },
+    { id: 'PATCH',   label: 'PATCH' },
+    { id: 'DELETE',  label: 'DELETE' },
+  ];
+
+  const ENV_OPTIONS = [
+    { id: '',             label: 'All' },
+    { id: 'production',   label: 'production' },
+    { id: 'staging',      label: 'staging' },
+    { id: 'development',  label: 'development' },
+  ];
 
   const DATE_PRESETS = [
     { id: '',       label: 'All time' },
@@ -30,6 +55,10 @@
     search: string;
     from: string;
     to: string;
+    level: string;
+    method: string;
+    environment: string;
+    status: string;
   }
 
   interface Props {
@@ -58,22 +87,31 @@
     ontoggleLive,
   }: Props = $props();
 
-  let showColumnPicker  = $state(false);
-  let showAdvanced      = $state(false);
-  let showCustomModal   = $state(false);
+  let showColumnPicker = $state(false);
+  let showAdvanced     = $state(false);
+  let showSecondBar    = $state(true);
+  let showCustomModal  = $state(false);
   let searchDebounce: ReturnType<typeof setTimeout>;
 
   let localSearch  = $state('');
   let datePreset   = $state('');
   let customFrom   = $state('');
   let customTo     = $state('');
+  let localLevel   = $state('');
+  let localMethod  = $state('');
+  let localEnv     = $state('');
+  let localStatus  = $state('');
   // Temporary state used only inside the modal
   let pendingFrom  = $state('');
   let pendingTo    = $state('');
 
   // Sync from parent resets
   $effect(() => {
-    localSearch = filters.search;
+    localSearch  = filters.search;
+    localLevel   = filters.level ?? '';
+    localMethod  = filters.method ?? '';
+    localEnv     = filters.environment ?? '';
+    localStatus  = filters.status ?? '';
     if (!filters.from && !filters.to) {
       datePreset = '';
       customFrom = '';
@@ -90,7 +128,15 @@
 
   function emit() {
     const { from, to } = computeDateRange();
-    onchange({ search: localSearch, from, to });
+    onchange({
+      search:      localSearch,
+      from,
+      to,
+      level:       localLevel,
+      method:      localMethod,
+      environment: localEnv,
+      status:      localStatus,
+    });
   }
 
   function onSearchInput() {
@@ -104,13 +150,16 @@
     emit();
   }
 
+  function onLevelChange(id: string)  { localLevel  = id; emit(); }
+  function onMethodChange(id: string) { localMethod = id; emit(); }
+  function onEnvChange(id: string)    { localEnv    = id; emit(); }
+
   function onDatePresetChange(id: string) {
     if (id === 'custom') {
-      // Pre-fill with existing custom values if any
       pendingFrom = customFrom;
       pendingTo   = customTo;
       showCustomModal = true;
-      return; // don't change datePreset yet
+      return;
     }
     datePreset = id;
     customFrom = '';
@@ -150,7 +199,23 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="filter-bar-wrap">
+  <!-- ── Top bar ────────────────────────────────────────────────── -->
   <div class="filter-bar" role="toolbar" aria-label="Log filters">
+
+    <!-- Chevron: colapsa/expande segunda barra -->
+    <button
+      onclick={() => { showSecondBar = !showSecondBar; }}
+      class="chevron-btn"
+      aria-label={showSecondBar ? 'Collapse filter bar' : 'Expand filter bar'}
+      aria-expanded={showSecondBar}
+      title={showSecondBar ? 'Collapse filters' : 'Expand filters'}
+    >
+      {#if showSecondBar}
+        <ChevronDown size={14} />
+      {:else}
+        <ChevronRight size={14} />
+      {/if}
+    </button>
 
     <!-- Advanced filters toggle -->
     {#if onconditionschange}
@@ -168,17 +233,6 @@
         {/if}
       </button>
     {/if}
-
-    <!-- Date range preset -->
-    <div class="date-select-wrap">
-      <CustomSelect
-        options={DATE_PRESETS}
-        value={datePreset}
-        compact={true}
-        placeholder="All time"
-        onSelect={onDatePresetChange}
-      />
-    </div>
 
     <!-- Search -->
     <div class="filter-group search-group">
@@ -247,6 +301,83 @@
     {/if}
   </div>
 
+  <!-- ── Segunda barra (colapsable) ────────────────────────────── -->
+  {#if showSecondBar}
+    <div class="second-bar" role="group" aria-label="Quick filters">
+
+      <!-- Tiempo -->
+      <div class="sb-field sb-field-date">
+        <CustomSelect
+          options={DATE_PRESETS}
+          value={datePreset}
+          compact={true}
+          placeholder="All time"
+          onSelect={onDatePresetChange}
+        />
+      </div>
+
+      <div class="sb-divider" aria-hidden="true"></div>
+
+      <!-- Level -->
+      <div class="sb-field">
+        <span class="sb-label">Level</span>
+        <div class="sb-select-wrap">
+          <CustomSelect
+            options={LEVEL_OPTIONS}
+            value={localLevel}
+            compact={true}
+            placeholder="All"
+            onSelect={onLevelChange}
+          />
+        </div>
+      </div>
+
+      <!-- Method -->
+      <div class="sb-field">
+        <span class="sb-label">Method</span>
+        <div class="sb-select-wrap">
+          <CustomSelect
+            options={METHOD_OPTIONS}
+            value={localMethod}
+            compact={true}
+            placeholder="All"
+            onSelect={onMethodChange}
+          />
+        </div>
+      </div>
+
+      <!-- Environment -->
+      <div class="sb-field">
+        <span class="sb-label">Env</span>
+        <div class="sb-select-wrap sb-select-wrap-env">
+          <CustomSelect
+            options={ENV_OPTIONS}
+            value={localEnv}
+            compact={true}
+            placeholder="All"
+            onSelect={onEnvChange}
+          />
+        </div>
+      </div>
+
+      <!-- Status -->
+      <div class="sb-field">
+        <label for="sb-status" class="sb-label">Status</label>
+        <input
+          id="sb-status"
+          type="text"
+          inputmode="numeric"
+          class="sb-input"
+          placeholder="200"
+          bind:value={localStatus}
+          oninput={emit}
+        />
+      </div>
+
+    </div>
+  {/if}
+
+  <!-- ── Advanced filters ───────────────────────────────────────── -->
   {#if showAdvanced && onconditionschange}
     <AdvancedFilters
       {schemaFields}
@@ -297,16 +428,37 @@
     flex-shrink: 0;
   }
 
+  /* ── Top bar ────────────────────────────────────────────────── */
   .filter-bar {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 8px 12px;
+    padding: 6px 8px;
     border-bottom: 1px solid var(--color-border-dim);
     background-color: var(--color-surface);
     flex-shrink: 0;
     flex-wrap: nowrap;
     overflow-x: auto;
+  }
+
+  .chevron-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    flex-shrink: 0;
+    background: transparent;
+    border: none;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    transition: color 0.15s;
+    padding: 0;
+  }
+  .chevron-btn:hover { color: var(--color-text-primary); }
+  .chevron-btn:focus-visible {
+    outline: 2px solid var(--color-brand-primary);
+    outline-offset: 2px;
   }
 
   .filter-group {
@@ -348,25 +500,13 @@
   }
   .search-clear-btn:hover { color: var(--color-text-primary); }
 
-  .date-select-wrap {
-    width: 148px;
-    flex-shrink: 0;
-  }
-
-  /* CustomSelect inside filter bar — remove space-y margin */
-  .date-select-wrap :global(.space-y-1\.5) {
-    margin: 0;
-  }
-
-  /* Spacer */
   .filter-spacer {
     flex: 0 1 auto;
     min-width: 4px;
   }
 
-  /* Input */
   .filter-input {
-    height: 30px;
+    height: 28px;
     background-color: var(--color-background);
     border: 1px solid var(--color-border-dim);
     color: var(--color-text-primary);
@@ -384,12 +524,11 @@
     outline-offset: 0;
   }
 
-  /* Buttons */
   .filter-btn {
     display: flex;
     align-items: center;
     gap: 5px;
-    height: 30px;
+    height: 28px;
     padding: 0 10px;
     font-size: 12px;
     font-weight: 600;
@@ -415,14 +554,12 @@
     color: var(--color-brand-primary);
   }
 
-  /* Accessible-only label */
   .sr-only {
     position: absolute; width: 1px; height: 1px;
     padding: 0; margin: -1px; overflow: hidden;
     clip: rect(0,0,0,0); white-space: nowrap; border: 0;
   }
 
-  /* Live button */
   .live-btn { gap: 7px; }
   .live-btn-active {
     background: color-mix(in srgb, var(--color-brand-success) 10%, transparent);
@@ -448,7 +585,69 @@
     50%       { opacity: 0.4; transform: scale(0.75); }
   }
 
-  /* Custom date range modal */
+  /* ── Segunda barra ──────────────────────────────────────────── */
+  .second-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--color-border-dim);
+    background-color: var(--color-surface);
+    flex-shrink: 0;
+    flex-wrap: wrap;
+  }
+
+  .sb-divider {
+    width: 1px;
+    height: 16px;
+    background: var(--color-border-dim);
+    flex-shrink: 0;
+    margin: 0 4px;
+  }
+
+  .sb-field {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+  }
+
+  .sb-label {
+    font-size: 11px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--color-text-muted);
+    white-space: nowrap;
+  }
+
+  .sb-input {
+    height: 26px;
+    background-color: var(--color-background);
+    border: 1px solid var(--color-border-dim);
+    color: var(--color-text-primary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 0 6px;
+    outline: none;
+    transition: border-color 0.15s;
+    cursor: text;
+  }
+  .sb-input  { width: 64px; }
+  .sb-input:focus {
+    border-color: var(--color-brand-primary);
+    outline: 2px solid color-mix(in srgb, var(--color-brand-primary) 30%, transparent);
+    outline-offset: 0;
+  }
+
+  /* CustomSelect wrappers inside second bar */
+  .sb-field-date      { min-width: 130px; }
+  .sb-select-wrap     { width: 90px; }
+  .sb-select-wrap-env { width: 120px; }
+  .sb-field :global(.space-y-1\.5) { margin: 0; }
+
+  /* ── Custom date range modal ────────────────────────────────── */
   .cr-body {
     display: flex;
     flex-direction: column;

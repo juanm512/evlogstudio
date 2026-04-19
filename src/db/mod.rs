@@ -56,6 +56,14 @@ pub struct LogRecord {
     pub id: String,
     pub timestamp: DateTime<Utc>,
     pub source: String,
+    pub service: Option<String>,
+    pub environment: Option<String>,
+    pub method: Option<String>,
+    pub path: Option<String>,
+    pub status: Option<i32>,
+    pub duration_ms: Option<i32>,
+    pub request_id: Option<String>,
+    pub error: Option<String>,
     pub level: Option<String>,
     pub message: Option<String>,
     pub fields: serde_json::Value,
@@ -172,6 +180,20 @@ impl Db {
         conn.execute_batch(schema::CREATE_LOGS)
             .map_err(|e| DbError::Migration(format!("logs: {}", e)))?;
 
+        conn.execute_batch(schema::MIGRATE_LOGS_ADD_COLUMNS)
+            .map_err(|e| DbError::Migration(format!("logs migrate columns: {}", e)))?;
+
+        conn.execute_batch(schema::CREATE_IDX_LOGS_SERVICE)
+            .map_err(|e| DbError::Migration(format!("idx_logs_service: {}", e)))?;
+        conn.execute_batch(schema::CREATE_IDX_LOGS_ENV)
+            .map_err(|e| DbError::Migration(format!("idx_logs_env: {}", e)))?;
+        conn.execute_batch(schema::CREATE_IDX_LOGS_STATUS)
+            .map_err(|e| DbError::Migration(format!("idx_logs_status: {}", e)))?;
+        conn.execute_batch(schema::CREATE_IDX_LOGS_REQUEST_ID)
+            .map_err(|e| DbError::Migration(format!("idx_logs_request_id: {}", e)))?;
+        conn.execute_batch(schema::CREATE_IDX_LOGS_DURATION)
+            .map_err(|e| DbError::Migration(format!("idx_logs_duration: {}", e)))?;
+
         conn.execute_batch(schema::CREATE_SCHEMA_INFERENCE)
             .map_err(|e| DbError::Migration(format!("_schema: {}", e)))?;
 
@@ -228,15 +250,25 @@ impl Db {
 
         let mut count = 0;
         {
-            let mut stmt = tx.prepare("INSERT INTO logs (id, timestamp, source, level, message, fields, ingested_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-                .map_err(|e| DbError::Query(format!("Prepare statement error: {}", e)))?;
+            let mut stmt = tx.prepare(
+                "INSERT INTO logs (id, timestamp, source, service, environment, method, path, status, duration_ms, request_id, error, level, message, fields, ingested_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            ).map_err(|e| DbError::Query(format!("Prepare statement error: {}", e)))?;
 
             for log in logs {
-                let fields_json = log.fields.to_string(); // fields serializado a JSON
+                let fields_json = log.fields.to_string();
                 stmt.execute(duckdb::params![
                     &log.id,
                     &log.timestamp,
                     &log.source,
+                    &log.service,
+                    &log.environment,
+                    &log.method,
+                    &log.path,
+                    &log.status,
+                    &log.duration_ms,
+                    &log.request_id,
+                    &log.error,
                     &log.level,
                     &log.message,
                     &fields_json,
@@ -261,7 +293,7 @@ impl Db {
     pub fn query_logs(&self, params: &LogQueryParams) -> Result<Vec<crate::ingest::normalize::NormalizedLog>, DbError> {
         let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
         
-        let mut query = "SELECT id, timestamp, source, level, message, fields, ingested_at FROM logs WHERE 1=1".to_string();
+        let mut query = "SELECT id, timestamp, source, service, environment, method, path, status, duration_ms, request_id, error, level, message, fields, ingested_at FROM logs WHERE 1=1".to_string();
         let mut args: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
 
         if let Some(ref s) = params.source {
@@ -284,6 +316,30 @@ impl Db {
             query.push_str(" AND lower(message) LIKE lower(?)");
             args.push(Box::new(format!("%{}%", search)));
         }
+        if let Some(ref s) = params.service {
+            query.push_str(" AND service = ?");
+            args.push(Box::new(s.clone()));
+        }
+        if let Some(ref e) = params.environment {
+            query.push_str(" AND environment = ?");
+            args.push(Box::new(e.clone()));
+        }
+        if let Some(ref m) = params.method {
+            query.push_str(" AND method = ?");
+            args.push(Box::new(m.clone()));
+        }
+        if let Some(ref p) = params.path {
+            query.push_str(" AND path = ?");
+            args.push(Box::new(p.clone()));
+        }
+        if let Some(s) = params.status {
+            query.push_str(" AND status = ?");
+            args.push(Box::new(s));
+        }
+        if let Some(ref r) = params.request_id {
+            query.push_str(" AND request_id = ?");
+            args.push(Box::new(r.clone()));
+        }
         if let Some(ref c) = params.cursor {
             query.push_str(" AND id < ?");
             args.push(Box::new(c.clone()));
@@ -298,18 +354,29 @@ impl Db {
 
         let sql_args: Vec<&dyn duckdb::ToSql> = args.iter().map(|b| b.as_ref()).collect();
 
+        // col indices: 0=id,1=ts,2=source,3=service,4=env,5=method,6=path,
+        //              7=status,8=duration_ms,9=request_id,10=error,
+        //              11=level,12=message,13=fields,14=ingested_at
         let log_iter = stmt.query_map(sql_args.as_slice(), |row| {
-            let fields_str: String = row.get(5)?;
+            let fields_str: String = row.get(13)?;
             let fields = serde_json::from_str(&fields_str).unwrap_or(serde_json::Value::Null);
 
             Ok(crate::ingest::normalize::NormalizedLog {
                 id: row.get(0)?,
                 timestamp: row.get(1)?,
                 source: row.get(2)?,
-                level: row.get(3)?,
-                message: row.get(4)?,
+                service: row.get(3).ok().flatten(),
+                environment: row.get(4).ok().flatten(),
+                method: row.get(5).ok().flatten(),
+                path: row.get(6).ok().flatten(),
+                status: row.get(7).ok().flatten(),
+                duration_ms: row.get(8).ok().flatten(),
+                request_id: row.get(9).ok().flatten(),
+                error: row.get(10).ok().flatten(),
+                level: row.get(11)?,
+                message: row.get(12)?,
                 fields,
-                ingested_at: row.get(6)?,
+                ingested_at: row.get(14)?,
             })
         }).map_err(|e| DbError::Query(e.to_string()))?;
 
@@ -928,7 +995,8 @@ impl Db {
 
         // --- Build full query ---
         let mut query = format!(
-            "SELECT id, timestamp, source, level, message, fields, ingested_at \
+            "SELECT id, timestamp, source, service, environment, method, path, \
+             status, duration_ms, request_id, error, level, message, fields, ingested_at \
              FROM logs WHERE {}",
             cutoff_clause
         );
@@ -953,17 +1021,28 @@ impl Db {
         let sql_args: Vec<&dyn duckdb::ToSql> = args.iter().map(|b| b.as_ref()).collect();
 
         let row_iter = stmt.query_map(sql_args.as_slice(), |row| {
+            // col indices: 0=id,1=ts,2=source,3=service,4=env,5=method,6=path,
+            //              7=status,8=duration_ms,9=request_id,10=error,
+            //              11=level,12=message,13=fields,14=ingested_at
             Ok(LogRecord {
                 id: row.get(0)?,
                 timestamp: row.get(1)?,
                 source: row.get(2)?,
-                level: row.get(3).ok(),
-                message: row.get(4).ok(),
+                service: row.get(3).ok().flatten(),
+                environment: row.get(4).ok().flatten(),
+                method: row.get(5).ok().flatten(),
+                path: row.get(6).ok().flatten(),
+                status: row.get(7).ok().flatten(),
+                duration_ms: row.get(8).ok().flatten(),
+                request_id: row.get(9).ok().flatten(),
+                error: row.get(10).ok().flatten(),
+                level: row.get(11).ok(),
+                message: row.get(12).ok(),
                 fields: {
-                    let s: String = row.get(5)?;
+                    let s: String = row.get(13)?;
                     serde_json::from_str(&s).unwrap_or_default()
                 },
-                ingested_at: row.get(6)?,
+                ingested_at: row.get(14)?,
             })
         }).map_err(|e| DbError::Query(e.to_string()))?;
 
@@ -1021,17 +1100,29 @@ impl Db {
     pub fn query_raw(&self, sql: &str) -> Result<Vec<crate::ingest::normalize::NormalizedLog>, DbError> {
         let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
         let mut stmt = conn.prepare(sql).map_err(|e| DbError::Query(e.to_string()))?;
+        // Expected col order (from buildAdvancedSql):
+        // 0=id,1=ts,2=source,3=service,4=env,5=method,6=path,
+        // 7=status,8=duration_ms,9=request_id,10=error,
+        // 11=level,12=message,13=fields,14=ingested_at
         let log_iter = stmt.query_map([], |row| {
-            let fields_str: String = row.get(5)?;
+            let fields_str: String = row.get(13)?;
             let fields = serde_json::from_str(&fields_str).unwrap_or(serde_json::Value::Null);
             Ok(crate::ingest::normalize::NormalizedLog {
                 id: row.get(0)?,
                 timestamp: row.get(1)?,
                 source: row.get(2)?,
-                level: row.get(3)?,
-                message: row.get(4)?,
+                service: row.get(3).ok().flatten(),
+                environment: row.get(4).ok().flatten(),
+                method: row.get(5).ok().flatten(),
+                path: row.get(6).ok().flatten(),
+                status: row.get(7).ok().flatten(),
+                duration_ms: row.get(8).ok().flatten(),
+                request_id: row.get(9).ok().flatten(),
+                error: row.get(10).ok().flatten(),
+                level: row.get(11)?,
+                message: row.get(12)?,
                 fields,
-                ingested_at: row.get(6)?,
+                ingested_at: row.get(14)?,
             })
         }).map_err(|e| DbError::Query(e.to_string()))?;
         let mut logs = Vec::new();
@@ -1175,6 +1266,12 @@ pub struct LogQueryParams {
     pub from: Option<DateTime<Utc>>,
     pub to: Option<DateTime<Utc>>,
     pub search: Option<String>,
+    pub service: Option<String>,
+    pub environment: Option<String>,
+    pub method: Option<String>,
+    pub path: Option<String>,
+    pub status: Option<i32>,
+    pub request_id: Option<String>,
     pub limit: u32,
     pub cursor: Option<String>,
 }

@@ -207,69 +207,57 @@ mod tests {
         let logs = vec![
             NormalizedLog {
                 id: "a1".to_string(),
-                timestamp: chrono::DateTime::parse_from_rfc3339("2025-06-01T10:00:00Z")
-                    .unwrap()
-                    .with_timezone(&Utc),
+                timestamp: chrono::DateTime::parse_from_rfc3339("2025-06-01T10:00:00Z").unwrap().with_timezone(&Utc),
                 source: "svc".to_string(),
-                level: Some("info".to_string()),
-                message: Some("msg".to_string()),
-                fields: json!({}),
-                ingested_at: Utc::now(),
+                service: None, environment: None, method: None, path: None,
+                status: None, duration_ms: None, request_id: None, error: None,
+                level: Some("info".to_string()), message: Some("msg".to_string()),
+                fields: json!({}), ingested_at: Utc::now(),
             },
             NormalizedLog {
                 id: "a2".to_string(),
-                timestamp: chrono::DateTime::parse_from_rfc3339("2025-06-01T11:00:00Z")
-                    .unwrap()
-                    .with_timezone(&Utc),
+                timestamp: chrono::DateTime::parse_from_rfc3339("2025-06-01T11:00:00Z").unwrap().with_timezone(&Utc),
                 source: "svc".to_string(),
-                level: Some("error".to_string()),
-                message: Some("msg".to_string()),
-                fields: json!({}),
-                ingested_at: Utc::now(),
+                service: None, environment: None, method: None, path: None,
+                status: None, duration_ms: None, request_id: None, error: None,
+                level: Some("error".to_string()), message: Some("msg".to_string()),
+                fields: json!({}), ingested_at: Utc::now(),
             },
             NormalizedLog {
                 id: "a3".to_string(),
-                timestamp: chrono::DateTime::parse_from_rfc3339("2025-06-01T12:00:00Z")
-                    .unwrap()
-                    .with_timezone(&Utc),
+                timestamp: chrono::DateTime::parse_from_rfc3339("2025-06-01T12:00:00Z").unwrap().with_timezone(&Utc),
                 source: "svc".to_string(),
-                level: Some("info".to_string()),
-                message: Some("msg".to_string()),
-                fields: json!({}),
-                ingested_at: Utc::now(),
+                service: None, environment: None, method: None, path: None,
+                status: None, duration_ms: None, request_id: None, error: None,
+                level: Some("info".to_string()), message: Some("msg".to_string()),
+                fields: json!({}), ingested_at: Utc::now(),
             },
             NormalizedLog {
                 id: "a4".to_string(),
-                timestamp: chrono::DateTime::parse_from_rfc3339("2025-06-01T13:00:00Z")
-                    .unwrap()
-                    .with_timezone(&Utc),
+                timestamp: chrono::DateTime::parse_from_rfc3339("2025-06-01T13:00:00Z").unwrap().with_timezone(&Utc),
                 source: "svc".to_string(),
-                level: Some("fatal".to_string()),
-                message: Some("msg".to_string()),
-                fields: json!({}),
-                ingested_at: Utc::now(),
+                service: None, environment: None, method: None, path: None,
+                status: None, duration_ms: None, request_id: None, error: None,
+                level: Some("fatal".to_string()), message: Some("msg".to_string()),
+                fields: json!({}), ingested_at: Utc::now(),
             },
             NormalizedLog {
                 id: "a5".to_string(),
-                timestamp: chrono::DateTime::parse_from_rfc3339("2025-06-01T14:00:00Z")
-                    .unwrap()
-                    .with_timezone(&Utc),
+                timestamp: chrono::DateTime::parse_from_rfc3339("2025-06-01T14:00:00Z").unwrap().with_timezone(&Utc),
                 source: "svc".to_string(),
-                level: Some("error".to_string()),
-                message: Some("msg".to_string()),
-                fields: json!({}),
-                ingested_at: Utc::now(),
+                service: None, environment: None, method: None, path: None,
+                status: None, duration_ms: None, request_id: None, error: None,
+                level: Some("error".to_string()), message: Some("msg".to_string()),
+                fields: json!({}), ingested_at: Utc::now(),
             },
             NormalizedLog {
                 id: "a6".to_string(),
-                timestamp: chrono::DateTime::parse_from_rfc3339("2025-06-01T15:00:00Z")
-                    .unwrap()
-                    .with_timezone(&Utc),
+                timestamp: chrono::DateTime::parse_from_rfc3339("2025-06-01T15:00:00Z").unwrap().with_timezone(&Utc),
                 source: "svc".to_string(),
-                level: Some("info".to_string()),
-                message: Some("msg".to_string()),
-                fields: json!({}),
-                ingested_at: Utc::now(),
+                service: None, environment: None, method: None, path: None,
+                status: None, duration_ms: None, request_id: None, error: None,
+                level: Some("info".to_string()), message: Some("msg".to_string()),
+                fields: json!({}), ingested_at: Utc::now(),
             },
         ];
         db.insert_logs(&logs).expect("insert logs");

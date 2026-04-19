@@ -8,16 +8,67 @@ pub struct NormalizedLog {
     pub id: String,
     pub timestamp: DateTime<Utc>,
     pub source: String,
+    pub service: Option<String>,
+    pub environment: Option<String>,
+    pub method: Option<String>,
+    pub path: Option<String>,
+    pub status: Option<i32>,
+    pub duration_ms: Option<i32>,
+    pub request_id: Option<String>,
+    pub error: Option<String>,
     pub level: Option<String>,
     pub message: Option<String>,
     pub fields: Value,
     pub ingested_at: DateTime<Utc>,
 }
 
+fn extract_str(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(val) = obj.get(*key) {
+            if let Some(s) = val.as_str() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn parse_duration_str(s: &str) -> Option<i32> {
+    let s = s.trim();
+    if let Some(n) = s.strip_suffix("ms") {
+        return n.trim().parse::<f64>().ok().map(|f| f as i32);
+    }
+    if let Some(n) = s.strip_suffix('s') {
+        return n.trim().parse::<f64>().ok().map(|f| (f * 1000.0) as i32);
+    }
+    s.parse::<f64>().ok().map(|f| f as i32)
+}
+
+fn extract_i32(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<i32> {
+    for key in keys {
+        if let Some(val) = obj.get(*key) {
+            if let Some(n) = val.as_i64() { return Some(n as i32); }
+            if let Some(f) = val.as_f64() { return Some(f as i32); }
+            if let Some(s) = val.as_str() {
+                if let Some(ms) = parse_duration_str(s) { return Some(ms); }
+            }
+        }
+    }
+    None
+}
+
 pub fn normalize(mut payload: Value, source: &str) -> NormalizedLog {
     let mut timestamp = None;
     let mut level = None;
     let mut message = None;
+    let mut service = None;
+    let mut environment = None;
+    let mut method = None;
+    let mut path = None;
+    let mut status: Option<i32> = None;
+    let mut duration_ms: Option<i32> = None;
+    let mut request_id = None;
+    let mut error = None;
 
     if let Some(obj) = payload.as_object_mut() {
         for key in ["timestamp", "time", "ts", "@timestamp"] {
@@ -48,12 +99,36 @@ pub fn normalize(mut payload: Value, source: &str) -> NormalizedLog {
                 }
             }
         }
+
+        service     = extract_str(obj, &["service", "serviceName", "service_name"]);
+        environment = extract_str(obj, &["environment", "env"]);
+        method      = extract_str(obj, &["method", "httpMethod", "http_method"]);
+        path        = extract_str(obj, &["path", "url", "pathname", "route"]);
+        status      = extract_i32(obj, &["status", "statusCode", "status_code"]);
+        duration_ms = extract_i32(obj, &["duration_ms", "duration", "durationMs"]);
+        request_id  = extract_str(obj, &["request_id", "requestId", "req_id", "traceId"]);
+
+        if let Some(err_val) = obj.get("error") {
+            error = match err_val {
+                Value::String(s) => Some(s.clone()),
+                Value::Null => None,
+                other => Some(other.to_string()),
+            };
+        }
     }
 
     NormalizedLog {
         id: Uuid::new_v4().to_string(),
         timestamp: timestamp.unwrap_or_else(Utc::now),
-        source: source.to_string(), // Source from token in the future
+        source: source.to_string(),
+        service,
+        environment,
+        method,
+        path,
+        status,
+        duration_ms,
+        request_id,
+        error,
         level,
         message,
         fields: payload,

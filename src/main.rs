@@ -104,9 +104,41 @@ async fn main() {
         panic!("Error al hacer bind en la direccion {}: {}", addr, e);
     });
 
-    axum::serve(listener, app).await.unwrap_or_else(|e| {
-        panic!("Error al iniciar el servidor Axum: {}", e);
-    });
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .unwrap_or_else(|e| {
+            panic!("Error al iniciar el servidor Axum: {}", e);
+        });
+
+    // Al llegar aquí el servidor paró de aceptar conexiones.
+    // Soltar el Arc<Db> para que DuckDB haga checkpoint del WAL antes de salir.
+    drop(shared_db);
+    info!("Base de datos cerrada correctamente.");
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Error al instalar handler de Ctrl+C");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("Error al instalar handler de SIGTERM")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c    => { info!("Ctrl+C recibido — iniciando shutdown graceful…"); },
+        _ = terminate => { info!("SIGTERM recibido — iniciando shutdown graceful…"); },
+    }
 }
 
 /// Arranca el job de limpieza de logs antiguos segun retencion
