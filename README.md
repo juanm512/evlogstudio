@@ -124,73 +124,58 @@ S3_REGION=auto \
 ./evlogstudio
 ```
 
-## Deployment
+## Deployment & Cloud Hosting
 
-### VPS / bare metal
-1. Download the binary for your architecture.
-2. Create a systemd service to ensure the server runs in the background.
+### Docker (Recommended)
 
-**Example `/etc/systemd/system/evlogstudio.service`:**
-```ini
-[Unit]
-Description=evlogstudio log server
-After=network.target
+The easiest way to run `evlogstudio` is using the official image from GitHub Container Registry:
 
-[Service]
-Type=simple
-User=root
-Environment=PORT=8080
-Environment=STORAGE_MODE=local
-Environment=DATA_PATH=/var/lib/evlogstudio/logs.duckdb
-ExecStart=/usr/local/bin/evlogstudio
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
-
-### Docker
-**Local mode (with volume):**
 ```bash
 docker run -d \
   -p 8080:8080 \
-  -v $(pwd)/data:/data \
+  -v evlog_data:/data \
   -e STORAGE_MODE=local \
   -e DATA_PATH=/data/logs.duckdb \
-  evlogstudio
+  ghcr.io/juanm512/evlogstudio:latest
 ```
 
-**S3 mode (no persistent volume):**
-```bash
-docker run -d \
-  -p 8080:8080 \
-  -e STORAGE_MODE=s3 \
-  -e S3_BUCKET=my-logs \
-  -e S3_ACCESS_KEY_ID=xxx \
-  -e S3_SECRET_ACCESS_KEY=yyy \
-  evlogstudio
-```
+### Cloud Providers
 
-### Railway
-1. Connect your repository.
-2. In the dashboard, configure the required environment variables.
-3. If using `local` mode, add a **Volume** and point `DATA_PATH` to a path inside that volume. Otherwise, use `s3` mode.
+#### Fly.io 
+Follow these steps to deploy using the provided `fly.toml`:
+1. **Create the App**: `fly apps create evlogstudio`
+2. **Create the Volume**: `fly volumes create evlog_data --region gru --size 1`
+3. **Deploy**: `fly deploy`
 
-### Render
-1. Create a **Web Service**.
-2. If using `local` mode, add a **Persistent Disk** at `/data` and configure `DATA_PATH=/data/logs.duckdb`.
-3. Configure the environment variables in the "Environment" tab.
+#### Render
+1. Create a **Web Service** -> **Existing Image**.
+2. Use: `ghcr.io/juanm512/evlogstudio:latest`.
+3. Add a **Persistent Disk** at `/data`.
+4. Set `STORAGE_MODE=local` and `DATA_PATH=/data/logs.duckdb`.
 
-### Fly.io
-1. Run `fly launch`.
-2. Create a volume: `fly volumes create evlog_data --size 1`.
-3. Configure `fly.toml` to mount the volume:
-```toml
-[mounts]
-  source = "evlog_data"
-  destination = "/data"
-```
-4. Set sensitive variables: `fly secrets set MOTHERDUCK_TOKEN=...`.
+#### Railway
+1. Create a **New Project** -> **Deploy from Docker image**.
+2. Use: `ghcr.io/juanm512/evlogstudio:latest`.
+3. Add a **Volume** and mount it at `/data`.
+4. Set Environment Variables: `STORAGE_MODE=local`, `DATA_PATH=/data/logs.duckdb`.
+
+---
+
+### Important: Persistence & Costs
+
+When deploying to the cloud, keep these constraints in mind:
+
+| Feature | Fly.io | Render | Railway |
+| :--- | :--- | :--- | :--- |
+| **Free Tier** | No (Pay-as-you-go) | Yes (Web Service) | Trial only ($5) |
+| **Persistence** | Yes (Paid Volume) | **No** (Paid plan only) | Yes (Paid Volume) |
+| **Always On** | Yes | No (Sleeps after 15m) | Yes |
+
+> [!WARNING]
+> **Data Loss on Render Free**: Render's free tier does NOT support persistent disks. If you deploy to Render Free, your logs will be deleted every time the service restarts or sleeps. For a production logs server, use a paid plan with a Disk or a different provider.
+
+> [!TIP]
+> **Truly $0 Hosting?**: If you need a permanent $0 server with persistence, consider **Oracle Cloud Free Tier** (Always Free ARM VMs) or self-hosting on a local device (Raspberry Pi/Old Laptop) using **Cloudflare Tunnels**.
 
 ## Initial Setup
 

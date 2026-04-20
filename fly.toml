@@ -1,0 +1,23 @@
+app = "evlogstudio"
+primary_region = "gru" # Change according to preference (gru=Sao Paulo)
+
+[build]
+  image = "ghcr.io/juanm512/evlogstudio:latest"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+[[mounts]]
+  source = "evlog_data"
+  destination = "/data"
+
+[env]
+  HOST = "0.0.0.0"
+  PORT = "8080"
+  STORAGE_MODE = "local"
+  DATA_PATH = "/data/logs.duckdb"
