@@ -19,7 +19,16 @@ use crate::AppError;
 pub struct CreateSourceReq {
     name: String,
     description: Option<String>,
-    retention_days: Option<i32>,
+    retention: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateSourceReq {
+    retention: Option<String>,
+    sampling_enabled: Option<bool>,
+    sampling_debug_rate: Option<i32>,
+    sampling_info_rate: Option<i32>,
+    sampling_warn_rate: Option<i32>,
 }
 
 #[derive(Deserialize)]
@@ -30,7 +39,8 @@ pub struct CreateTokenReq {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/sources", get(list_sources).post(create_source))
-        .route("/api/sources/:id", delete(delete_source))
+        .route("/api/sources/:id", delete(delete_source).patch(update_source))
+        .route("/api/sources/:id/logs", delete(delete_source_logs))
         .route("/api/sources/:id/tokens", get(list_tokens).post(create_token))
         .route("/api/tokens/:id", delete(revoke_token))
 }
@@ -57,7 +67,12 @@ async fn create_source(
         return Err(AppError::BadRequest("invalid source name".to_string()));
     }
 
-    match db.create_source(name, payload.description.as_deref(), payload.retention_days) {
+    if let Some(ref r) = payload.retention {
+        crate::db::Db::parse_retention(r)
+            .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    }
+
+    match db.create_source(name, payload.description.as_deref(), payload.retention) {
         Ok(id) => Ok((StatusCode::CREATED, axum::Json(json!({"id": id, "name": name})))),
         Err(e) => {
             let err_str = e.to_string();
@@ -72,6 +87,40 @@ async fn create_source(
                 Err(AppError::Internal(err_str))
             }
         }
+    }
+}
+
+async fn update_source(
+    user: AuthUser,
+    Path(id): Path<String>,
+    State(db): State<Arc<Db>>,
+    Json(payload): Json<UpdateSourceReq>,
+) -> Result<impl IntoResponse, AppError> {
+    require_admin(&user)?;
+    let params = crate::db::UpdateSourceParams {
+        retention: payload.retention,
+        sampling_enabled: payload.sampling_enabled,
+        sampling_debug_rate: payload.sampling_debug_rate,
+        sampling_info_rate: payload.sampling_info_rate,
+        sampling_warn_rate: payload.sampling_warn_rate,
+    };
+    match db.update_source(&id, &params) {
+        Ok(true) => Ok((StatusCode::OK, axum::Json(json!({"message": "updated"})))),
+        Ok(false) => Err(AppError::NotFound),
+        Err(crate::db::DbError::InvalidInput(msg)) => Err(AppError::BadRequest(msg)),
+        Err(e) => Err(AppError::Internal(e.to_string())),
+    }
+}
+
+async fn delete_source_logs(
+    user: AuthUser,
+    Path(id): Path<String>,
+    State(db): State<Arc<Db>>,
+) -> Result<impl IntoResponse, AppError> {
+    require_admin(&user)?;
+    match db.delete_source_logs(&id) {
+        Ok(deleted) => Ok((StatusCode::OK, axum::Json(json!({"deleted": deleted})))),
+        Err(e) => Err(AppError::Internal(e.to_string())),
     }
 }
 

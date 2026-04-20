@@ -17,19 +17,23 @@
     queryFn: () => api.get<Source[]>('/api/sources')
   }));
 
+  const RETENTION_RE = /^\d+(d|h|m)$/;
+
   let isModalOpen = $state(false);
   let isSubmitting = $state(false);
   let errorMsg = $state('');
+  let retentionError = $state('');
 
   let formData = $state({
     name: '',
     description: '',
-    retention_days: 30
+    retention: '30d'
   });
 
   function resetForm() {
-    formData = { name: '', description: '', retention_days: 30 };
+    formData = { name: '', description: '', retention: '30d' };
     errorMsg = '';
+    retentionError = '';
   }
 
   let isDeleteModalOpen = $state(false);
@@ -37,6 +41,11 @@
 
   async function handleCreate() {
     if (!formData.name) return;
+    retentionError = '';
+    if (!RETENTION_RE.test(formData.retention)) {
+      retentionError = "Formato inválido. Usar: '30d', '24h', '60m'";
+      return;
+    }
     isSubmitting = true;
     errorMsg = '';
     try {
@@ -130,7 +139,7 @@
               <td class="px-6 py-4 text-xs text-text-secondary truncate max-w-[300px]" title={source.description || ''}>
                 {source.description || '—'}
               </td>
-              <td class="px-6 py-4 text-xs font-mono text-text-secondary text-right">{source.retention_days}d</td>
+              <td class="px-6 py-4 text-xs font-mono text-text-secondary text-right">{source.retention ?? '30d'}</td>
               <td class="px-6 py-4 text-[11px] font-mono text-text-muted tracking-tight">
                 {format(new Date(source.created_at), 'yyyy/MM/dd HH:mm')}
               </td>
@@ -178,14 +187,20 @@
     </div>
 
     <div class="space-y-2">
-      <label for="retention" class="text-[10px] font-bold uppercase tracking-widest text-text-muted block">Retention Policy (Days)</label>
-      <input 
+      <label for="retention" class="text-[10px] font-bold uppercase tracking-widest text-text-muted block">Retention Policy</label>
+      <input
         id="retention"
-        type="number"
-        bind:value={formData.retention_days}
-        min="1"
-        class="w-full bg-surface-elevated border border-border-dim p-3 text-[13px] font-mono text-text-primary focus:border-brand-primary outline-none transition-colors"
+        type="text"
+        bind:value={formData.retention}
+        placeholder="ej: 30d, 24h, 60m"
+        class="w-full bg-surface-elevated border border-border-dim p-3 text-[13px] font-mono text-text-primary focus:border-brand-primary outline-none transition-colors {retentionError ? 'border-brand-danger' : ''}"
       />
+      <p class="text-[10px] font-mono text-text-muted">d = días, h = horas, m = minutos</p>
+      {#if retentionError}
+        <div class="text-brand-danger text-[10px] font-bold uppercase bg-brand-danger/5 p-2 border-l-2 border-brand-danger font-mono">
+          Error: {retentionError}
+        </div>
+      {/if}
     </div>
 
     {#if errorMsg}

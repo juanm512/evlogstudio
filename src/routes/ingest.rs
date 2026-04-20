@@ -40,8 +40,16 @@ pub async fn ingest_handler(
         return Err(AppError::BadRequest("invalid payload".to_string()));
     }
 
-    // Apply sampling
-    let sampling = state.sampling_config.read().await;
+    // Apply sampling — per-source config takes precedence over global
+    let source_map = state.source_sampling.read().await;
+    let global_sampling;
+    let sampling: &crate::SamplingConfig = if let Some(s) = source_map.get(&source) {
+        s
+    } else {
+        global_sampling = state.sampling_config.read().await;
+        &global_sampling
+    };
+
     let filtered_logs = if sampling.enabled {
         let mut rng = rand::thread_rng();
         logs.into_iter().filter(|log| {
@@ -49,7 +57,7 @@ pub async fn ingest_handler(
                 Some("debug") => sampling.debug_rate,
                 Some("info") => sampling.info_rate,
                 Some("warn") => sampling.warn_rate,
-                _ => 100, // error, fatal, or unknown are always 100%
+                _ => 100, // error, fatal, or unknown always 100%
             };
             if rate >= 100 {
                 true

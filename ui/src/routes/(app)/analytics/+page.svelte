@@ -2,11 +2,12 @@
   import { onMount } from 'svelte';
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { api } from '$lib/api';
-  import { selectedSources, currentUser } from '$lib/stores';
-  import type { VolumeResponse, ErrorRateResponse, LogsResponse, SchemaResponse } from '$lib/types';
+  import { currentUser } from '$lib/stores';
+  import type { VolumeResponse, ErrorRateResponse, LogsResponse, SchemaResponse, Source } from '$lib/types';
   import MetricCard from '$lib/components/analytics/MetricCard.svelte';
   import VolumeChart from '$lib/components/analytics/VolumeChart.svelte';
   import CustomSelect from '$lib/components/common/CustomSelect.svelte';
+  import SourceMultiSelect from '$lib/components/common/SourceMultiSelect.svelte';
   import TopValues from '$lib/components/analytics/TopValues.svelte';
   import { toCSV, downloadCSV } from '$lib/utils';
   import { subHours, subDays, formatISO } from 'date-fns';
@@ -20,12 +21,15 @@
   let selectedField = $state('');
   let isExporting = $state(false);
 
-  // ─── Sync global stores → local runes ────────────────────────────────────────
+  // ─── Sources state ────────────────────────────────────────────────────────────
   let sourcesValue = $state<string[]>([]);
-  $effect(() => {
-    const unsub = selectedSources.subscribe(v => { sourcesValue = v; });
-    return unsub;
-  });
+
+  const sourcesQuery = createQuery(() => ({
+    queryKey: ['sources'],
+    queryFn: () => api.get<Source[]>('/api/sources'),
+    staleTime: 60_000,
+  }));
+  let availableSources = $derived(sourcesQuery.data ?? []);
 
   let userValue = $state<{ email: string; role: string } | null>(null);
   $effect(() => {
@@ -53,7 +57,6 @@
   // ─── Time range ───────────────────────────────────────────────────────────────
   let now = $state(new Date());
 
-  // MEJORA 3: Page Visibility API + interval
   onMount(() => {
     const timer = setInterval(() => {
       now = new Date();
@@ -118,17 +121,16 @@
     refetchIntervalInBackground: false,
   }));
 
-  const sourcesQuery = createQuery(() => ({
-    queryKey: ['analytics', 'sources-check', from(), to],
-    queryFn: () => {
-      const params = new URLSearchParams({ from: from(), to, limit: '1' });
-      return api.get<LogsResponse>(`/api/logs?${params}`);
-    },
-    refetchInterval: 60_000,
-    refetchIntervalInBackground: false,
-  }));
+  // const sourcesQuery = createQuery(() => ({
+  //   queryKey: ['analytics', 'sources-check', from(), to],
+  //   queryFn: () => {
+  //     const params = new URLSearchParams({ from: from(), to, limit: '1' });
+  //     return api.get<LogsResponse>(`/api/logs?${params}`);
+  //   },
+  //   refetchInterval: 60_000,
+  //   refetchIntervalInBackground: false,
+  // }));
 
-  // MEJORA 1 + 2: Schema para field list y detección de duration_ms
   const schemaQuery = createQuery(() => ({
     queryKey: ['schema', ...sourcesValue],
     queryFn: () => {
@@ -142,7 +144,6 @@
   let fieldPaths = $derived(schemaQuery.data?.fields.map(f => f.field_path) ?? []);
   let hasDurationMs = $derived(fieldPaths.includes('duration_ms'));
 
-  // MEJORA 2: Percentile query
   function buildPercentileSQL(): string {
     let where = `fields->>'duration_ms' IS NOT NULL`;
     if (sourcesValue.length === 1) where += ` AND source = '${sanitize(sourcesValue[0])}'`;
@@ -178,7 +179,10 @@
   let errorRate = $derived(errorRateQuery.data ? `${(errorRateQuery.data.rate * 100).toFixed(1)}%` : '—');
   let activeSourcesCount = $derived(sourcesValue.length > 0 ? sourcesValue.length : '—');
 
-  // MEJORA 4: Export CSV
+  // ─── Source prop for new components ──────────────────────────────────────────
+  let singleSource = $derived(sourcesValue.length === 1 ? sourcesValue[0] : null);
+
+  // ─── Export CSV ───────────────────────────────────────────────────────────────
   function buildExportSQL(): string {
     let where = '1=1';
     if (sourcesValue.length === 1) where += ` AND source = '${sanitize(sourcesValue[0])}'`;
@@ -200,7 +204,8 @@
 </script>
 
 <div class="h-full overflow-y-auto space-y-6 max-w-full">
-  <!-- Header & Controls -->
+
+  <!-- 2. Header & Controls -->
   <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4 bg-surface-elevated p-6 border-b border-border-dim">
     <div>
       <h1 class="text-xl font-bold text-text-primary uppercase tracking-tight font-sans">Analytics</h1>
@@ -208,6 +213,15 @@
     </div>
 
     <div class="flex flex-wrap items-center gap-6">
+      <div class="min-w-[160px]">
+        <SourceMultiSelect
+          label="Source"
+          sources={availableSources}
+          value={sourcesValue}
+          onSelect={(s) => (sourcesValue = s)}
+        />
+      </div>
+
       <div class="min-w-[140px]">
         <CustomSelect
           label="Interval"
@@ -226,7 +240,6 @@
         />
       </div>
 
-      <!-- MEJORA 1: Field selector (admin only) -->
       {#if isAdmin}
         <div class="min-w-[200px]">
           <CustomSelect
@@ -239,7 +252,6 @@
         </div>
       {/if}
 
-      <!-- MEJORA 4: Export button (admin only) -->
       {#if isAdmin}
         <div class="flex flex-col gap-1.5">
           <label class="text-[10px] text-text-muted uppercase font-bold tracking-widest">Export</label>
@@ -270,7 +282,7 @@
   </div>
 
   <div class="px-6 pb-12 space-y-8">
-    <!-- MetricCards Grid -->
+    <!-- 3. MetricCards Grid -->
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-0 border-t border-l border-border-dim">
       <div class="border-r border-b border-border-dim">
         <MetricCard
@@ -302,7 +314,7 @@
       </div>
     </div>
 
-    <!-- MEJORA 2: Percentile cards (admin + duration_ms in schema) -->
+    <!-- Duration Percentiles (admin + duration_ms in schema) -->
     {#if isAdmin && hasDurationMs}
       <div>
         <div class="flex items-center gap-3 px-1 mb-3">
@@ -325,7 +337,7 @@
       </div>
     {/if}
 
-    <!-- VolumeChart Section -->
+    <!-- 4. VolumeChart -->
     <div class="space-y-4">
       <div class="flex items-center justify-between px-1">
         <div class="flex items-center gap-3">
@@ -360,15 +372,29 @@
       {/if}
     </div>
 
-    <!-- MEJORA 1: Top Values section (admin + field selected) -->
-    {#if isAdmin && selectedField}
-      <TopValues
-        field={selectedField}
-        source={sourcesValue.length === 1 ? sourcesValue[0] : null}
-        from={from()}
-        {to}
-      />
+    <!-- 6. Grid 2 cols: TopPaths | TopValues (admin only) -->
+    {#if isAdmin}
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {#if selectedField}
+          <TopValues
+            field={selectedField}
+            source={singleSource}
+            from={from()}
+            {to}
+          />
+        {:else}
+          <div class="space-y-3">
+            <div class="flex items-center gap-3 px-1">
+              <h3 class="text-[12px] font-bold text-text-secondary uppercase tracking-[3px]">Top Values</h3>
+            </div>
+            <div class="border border-border-dim bg-surface p-6 flex items-center justify-center">
+              <p class="text-text-muted text-[11px] font-mono uppercase tracking-[2px]">Select a field above to see top values</p>
+            </div>
+          </div>
+        {/if}
+      </div>
     {/if}
+
   </div>
 </div>
 

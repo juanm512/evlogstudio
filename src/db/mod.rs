@@ -36,8 +36,21 @@ pub struct SourceRecord {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
-    pub retention_days: Option<i32>,
+    pub retention: Option<String>,
+    pub sampling_enabled: Option<bool>,
+    pub sampling_debug_rate: Option<i32>,
+    pub sampling_info_rate: Option<i32>,
+    pub sampling_warn_rate: Option<i32>,
     pub created_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Default)]
+pub struct UpdateSourceParams {
+    pub retention: Option<String>,
+    pub sampling_enabled: Option<bool>,
+    pub sampling_debug_rate: Option<i32>,
+    pub sampling_info_rate: Option<i32>,
+    pub sampling_warn_rate: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,6 +219,27 @@ impl Db {
         conn.execute_batch(schema::CREATE_CONFIG)
             .map_err(|e| DbError::Migration(format!("config: {}", e)))?;
 
+        conn.execute_batch(schema::MIGRATE_SOURCES_ADD_RETENTION_COL)
+            .map_err(|e| DbError::Migration(format!("sources add retention col: {}", e)))?;
+
+        conn.execute_batch(schema::MIGRATE_SOURCES_POPULATE_RETENTION)
+            .map_err(|e| DbError::Migration(format!("sources populate retention: {}", e)))?;
+
+        conn.execute_batch(schema::MIGRATE_CONFIG_RETENTION_KEY)
+            .map_err(|e| DbError::Migration(format!("config retention key migration: {}", e)))?;
+
+        conn.execute_batch(schema::MIGRATE_SOURCES_ADD_SAMPLING)
+            .map_err(|e| DbError::Migration(format!("sources add sampling cols: {}", e)))?;
+
+        conn.execute_batch(schema::MIGRATE_SOURCES_POPULATE_SAMPLING)
+            .map_err(|e| DbError::Migration(format!("sources populate sampling: {}", e)))?;
+
+        conn.execute_batch(schema::CREATE_DASHBOARDS)
+            .map_err(|e| DbError::Migration(format!("dashboards: {}", e)))?;
+
+        conn.execute_batch(schema::CREATE_WIDGETS)
+            .map_err(|e| DbError::Migration(format!("widgets: {}", e)))?;
+
         Ok(())
     }
 
@@ -213,9 +247,9 @@ impl Db {
         let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
 
         conn.execute(
-            "INSERT INTO config (key, value) VALUES ('retention.default_days', '30') ON CONFLICT (key) DO NOTHING",
+            "INSERT INTO config (key, value) VALUES ('retention.default', '30d') ON CONFLICT (key) DO NOTHING",
             []
-        ).map_err(|e| DbError::Query(format!("seed retention.default_days: {}", e)))?;
+        ).map_err(|e| DbError::Query(format!("seed retention.default: {}", e)))?;
 
         conn.execute(
             "INSERT INTO config (key, value) VALUES ('sampling.enabled', 'false') ON CONFLICT (key) DO NOTHING",
@@ -388,21 +422,98 @@ impl Db {
         Ok(logs)
     }
 
-    pub fn delete_old_logs(&self, retention_days: i64) -> Result<usize, DbError> {
-        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
-        let threshold = chrono::Utc::now() - chrono::Duration::days(retention_days);
-        let q = format!("DELETE FROM logs WHERE ingested_at < '{}'", threshold.to_rfc3339());
-        let mut stmt = conn.prepare(&q).map_err(|e| DbError::Query(e.to_string()))?;
-        let count = stmt.execute([]).map_err(|e| DbError::Query(e.to_string()))?;
-        Ok(count)
+    /// Parsea strings tipo "30d", "24h", "60m" a minutos totales.
+    pub fn parse_retention(retention: &str) -> Result<i64, DbError> {
+        let re = regex::Regex::new(r"^(\d+)(d|h|m)$")
+            .map_err(|e| DbError::InvalidInput(e.to_string()))?;
+
+        let caps = re.captures(retention)
+            .ok_or_else(|| DbError::InvalidInput(
+                format!("Formato de retención inválido: '{}'. Usar: '30d', '24h', '60m'", retention)
+            ))?;
+
+        let num: i64 = caps[1].parse()
+            .map_err(|_| DbError::InvalidInput("Número inválido".to_string()))?;
+
+        let minutes = match &caps[2] {
+            "m" => num,
+            "h" => num * 60,
+            "d" => num * 24 * 60,
+            _ => unreachable!()
+        };
+
+        Ok(minutes)
     }
 
-    pub fn get_retention_days(&self) -> Result<i64, DbError> {
+    /// Elimina logs expirados respetando retención por source.
+    /// Retorna mapa source → filas eliminadas.
+    pub fn delete_old_logs(&self) -> Result<std::collections::HashMap<String, usize>, DbError> {
         let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
-        let mut stmt = conn.prepare("SELECT value FROM config WHERE key = 'retention.default_days'")
-            .map_err(|e| DbError::Query(e.to_string()))?;
-        let value: String = stmt.query_row([], |row| row.get(0)).map_err(|e| DbError::Query(e.to_string()))?;
-        value.parse::<i64>().map_err(|e| DbError::Query(format!("Invalid retention days format: {}", e)))
+
+        // 1. Default retention
+        let default_str = {
+            let mut stmt = conn.prepare("SELECT value FROM config WHERE key = 'retention.default'")
+                .map_err(|e| DbError::Query(e.to_string()))?;
+            stmt.query_row([], |row| row.get::<_, String>(0))
+                .unwrap_or_else(|_| "30d".to_string())
+        };
+        let default_minutes = Self::parse_retention(&default_str)?;
+
+        // 2. Sources con retención específica
+        let sources: Vec<(String, Option<String>)> = {
+            let mut stmt = conn.prepare("SELECT name, retention FROM sources")
+                .map_err(|e| DbError::Query(e.to_string()))?;
+            let iter = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            }).map_err(|e| DbError::Query(e.to_string()))?;
+            let mut v = Vec::new();
+            for r in iter {
+                v.push(r.map_err(|e| DbError::Query(e.to_string()))?);
+            }
+            v
+        };
+
+        let mut result: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut sources_with_retention: Vec<String> = Vec::new();
+
+        // 3. Retención por source
+        for (name, ret_opt) in &sources {
+            if let Some(ret) = ret_opt {
+                let minutes = match Self::parse_retention(ret) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                let threshold = chrono::Utc::now() - chrono::Duration::minutes(minutes);
+                let q = format!(
+                    "DELETE FROM logs WHERE source = '{}' AND ingested_at < '{}'",
+                    name, threshold.to_rfc3339()
+                );
+                let mut stmt = conn.prepare(&q).map_err(|e| DbError::Query(e.to_string()))?;
+                let count = stmt.execute([]).map_err(|e| DbError::Query(e.to_string()))?;
+                result.insert(name.clone(), count);
+                sources_with_retention.push(name.clone());
+            }
+        }
+
+        // 4. Retención default para el resto
+        let threshold = chrono::Utc::now() - chrono::Duration::minutes(default_minutes);
+        let q = if sources_with_retention.is_empty() {
+            format!("DELETE FROM logs WHERE ingested_at < '{}'", threshold.to_rfc3339())
+        } else {
+            let quoted: Vec<String> = sources_with_retention.iter()
+                .map(|s| format!("'{}'", s))
+                .collect();
+            format!(
+                "DELETE FROM logs WHERE ingested_at < '{}' AND source NOT IN ({})",
+                threshold.to_rfc3339(),
+                quoted.join(", ")
+            )
+        };
+        let mut stmt = conn.prepare(&q).map_err(|e| DbError::Query(e.to_string()))?;
+        let count = stmt.execute([]).map_err(|e| DbError::Query(e.to_string()))?;
+        result.insert("_default".to_string(), count);
+
+        Ok(result)
     }
 
     pub fn upsert_schema(&self, entries: &[crate::ingest::schema::SchemaEntry]) -> Result<(), DbError> {
@@ -673,31 +784,40 @@ impl Db {
         Ok(count > 0)
     }
 
-    pub fn create_source(&self, name: &str, description: Option<&str>, retention_days: Option<i32>) -> Result<String, DbError> {
+    pub fn create_source(&self, name: &str, description: Option<&str>, retention: Option<String>) -> Result<String, DbError> {
         if name.is_empty() {
             return Err(DbError::Query("El nombre del source no puede estar vacio".to_string()));
         }
+        let retention_val = retention.unwrap_or_else(|| "30d".to_string());
+        Self::parse_retention(&retention_val)?;
         let id = uuid::Uuid::new_v4().to_string();
         let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
-        let mut stmt = conn.prepare("INSERT INTO sources (id, name, description, retention_days, created_at) VALUES (?, ?, ?, ?, now())")
+        let mut stmt = conn.prepare("INSERT INTO sources (id, name, description, retention_days, retention, created_at) VALUES (?, ?, ?, 30, ?, now())")
             .map_err(|e| DbError::Query(e.to_string()))?;
-        stmt.execute(duckdb::params![&id, name, description, retention_days.unwrap_or(30)])
+        stmt.execute(duckdb::params![&id, name, description, &retention_val])
             .map_err(|e| DbError::Query(e.to_string()))?;
         Ok(id)
     }
 
     pub fn list_sources(&self) -> Result<Vec<SourceRecord>, DbError> {
         let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
-        let mut stmt = conn.prepare("SELECT id, name, description, retention_days, created_at FROM sources ORDER BY created_at DESC")
-            .map_err(|e| DbError::Query(e.to_string()))?;
-        
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, retention, \
+             sampling_enabled, sampling_debug_rate, sampling_info_rate, sampling_warn_rate, \
+             created_at FROM sources ORDER BY created_at DESC"
+        ).map_err(|e| DbError::Query(e.to_string()))?;
+
         let row_iter = stmt.query_map([], |row| {
             Ok(SourceRecord {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 description: row.get(2)?,
-                retention_days: row.get(3)?,
-                created_at: row.get(4)?,
+                retention: row.get(3)?,
+                sampling_enabled: row.get(4).ok().flatten(),
+                sampling_debug_rate: row.get(5).ok().flatten(),
+                sampling_info_rate: row.get(6).ok().flatten(),
+                sampling_warn_rate: row.get(7).ok().flatten(),
+                created_at: row.get(8)?,
             })
         }).map_err(|e| DbError::Query(e.to_string()))?;
 
@@ -706,6 +826,75 @@ impl Db {
             sources.push(s.map_err(|e| DbError::Query(e.to_string()))?);
         }
         Ok(sources)
+    }
+
+    pub fn update_source(&self, id: &str, params: &UpdateSourceParams) -> Result<bool, DbError> {
+        if let Some(ref r) = params.retention {
+            Self::parse_retention(r)?;
+        }
+        for rate in [params.sampling_debug_rate, params.sampling_info_rate, params.sampling_warn_rate].iter().flatten() {
+            if *rate < 0 || *rate > 100 {
+                return Err(DbError::InvalidInput("sampling rate must be 0–100".to_string()));
+            }
+        }
+
+        let mut sets: Vec<String> = Vec::new();
+        let mut args: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
+
+        if let Some(ref r) = params.retention {
+            sets.push("retention = ?".to_string());
+            args.push(Box::new(r.clone()));
+        }
+        if let Some(se) = params.sampling_enabled {
+            sets.push("sampling_enabled = ?".to_string());
+            args.push(Box::new(se));
+        }
+        if let Some(r) = params.sampling_debug_rate {
+            sets.push("sampling_debug_rate = ?".to_string());
+            args.push(Box::new(r));
+        }
+        if let Some(r) = params.sampling_info_rate {
+            sets.push("sampling_info_rate = ?".to_string());
+            args.push(Box::new(r));
+        }
+        if let Some(r) = params.sampling_warn_rate {
+            sets.push("sampling_warn_rate = ?".to_string());
+            args.push(Box::new(r));
+        }
+
+        if sets.is_empty() {
+            return Ok(true);
+        }
+
+        args.push(Box::new(id.to_string()));
+        let q = format!("UPDATE sources SET {} WHERE id = ?", sets.join(", "));
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare(&q).map_err(|e| DbError::Query(e.to_string()))?;
+        let sql_args: Vec<&dyn duckdb::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+        let count = stmt.execute(sql_args.as_slice()).map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(count > 0)
+    }
+
+    pub fn delete_source_logs(&self, id: &str) -> Result<i64, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let name: String = {
+            let mut stmt = conn.prepare("SELECT name FROM sources WHERE id = ?")
+                .map_err(|e| DbError::Query(e.to_string()))?;
+            let mut rows = stmt.query([id]).map_err(|e| DbError::Query(e.to_string()))?;
+            match rows.next().map_err(|e| DbError::Query(e.to_string()))? {
+                Some(row) => row.get(0).map_err(|e| DbError::Query(e.to_string()))?,
+                None => return Err(DbError::Query("Source not found".to_string())),
+            }
+        };
+        let count: i64 = {
+            let mut stmt = conn.prepare("SELECT COUNT(*) FROM logs WHERE source = ?")
+                .map_err(|e| DbError::Query(e.to_string()))?;
+            stmt.query_row([&name], |row| row.get(0)).map_err(|e| DbError::Query(e.to_string()))?
+        };
+        let mut stmt = conn.prepare("DELETE FROM logs WHERE source = ?")
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        stmt.execute([&name]).map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(count)
     }
 
     pub fn delete_source(&self, id: &str) -> Result<bool, DbError> {
@@ -1132,6 +1321,182 @@ impl Db {
         Ok(logs)
     }
 
+    // ─── Dashboard helpers ───────────────────────────────────────────────────
+
+    pub fn list_dashboards(&self) -> Result<Vec<Dashboard>, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare(
+            "SELECT d.id, d.name, d.description, d.created_by, \
+             CAST(d.created_at AS VARCHAR), CAST(d.updated_at AS VARCHAR), \
+             (SELECT COUNT(*) FROM widgets w WHERE w.dashboard_id = d.id) as widget_count \
+             FROM dashboards d ORDER BY d.created_at DESC"
+        ).map_err(|e| DbError::Query(e.to_string()))?;
+
+        let iter = stmt.query_map([], |row| {
+            Ok(Dashboard {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                created_by: row.get(3)?,
+                created_at: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                updated_at: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                widget_count: row.get(6).ok(),
+            })
+        }).map_err(|e| DbError::Query(e.to_string()))?;
+
+        let mut out = Vec::new();
+        for r in iter {
+            out.push(r.map_err(|e| DbError::Query(e.to_string()))?);
+        }
+        Ok(out)
+    }
+
+    pub fn get_dashboard(&self, id: &str) -> Result<Option<Dashboard>, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, created_by, \
+             CAST(created_at AS VARCHAR), CAST(updated_at AS VARCHAR) \
+             FROM dashboards WHERE id = ?"
+        ).map_err(|e| DbError::Query(e.to_string()))?;
+
+        let mut rows = stmt.query([id]).map_err(|e| DbError::Query(e.to_string()))?;
+        if let Some(row) = rows.next().map_err(|e| DbError::Query(e.to_string()))? {
+            Ok(Some(Dashboard {
+                id: row.get(0).map_err(|e| DbError::Query(e.to_string()))?,
+                name: row.get(1).map_err(|e| DbError::Query(e.to_string()))?,
+                description: row.get(2).map_err(|e| DbError::Query(e.to_string()))?,
+                created_by: row.get(3).map_err(|e| DbError::Query(e.to_string()))?,
+                created_at: row.get::<_, Option<String>>(4).map_err(|e| DbError::Query(e.to_string()))?.unwrap_or_default(),
+                updated_at: row.get::<_, Option<String>>(5).map_err(|e| DbError::Query(e.to_string()))?.unwrap_or_default(),
+                widget_count: None,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn create_dashboard(&self, name: &str, description: Option<&str>, created_by: &str) -> Result<String, DbError> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare(
+            "INSERT INTO dashboards (id, name, description, created_by, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, now(), now())"
+        ).map_err(|e| DbError::Query(e.to_string()))?;
+        stmt.execute(duckdb::params![&id, name, description, created_by])
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(id)
+    }
+
+    pub fn update_dashboard(&self, id: &str, name: &str, description: Option<&str>) -> Result<bool, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare(
+            "UPDATE dashboards SET name = ?, description = ?, updated_at = now() WHERE id = ?"
+        ).map_err(|e| DbError::Query(e.to_string()))?;
+        let count = stmt.execute(duckdb::params![name, description, id])
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(count > 0)
+    }
+
+    pub fn delete_dashboard(&self, id: &str) -> Result<bool, DbError> {
+        let mut conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let tx = conn.transaction().map_err(|e| DbError::Query(e.to_string()))?;
+        tx.execute("DELETE FROM widgets WHERE dashboard_id = ?", [id])
+            .map_err(|e| DbError::Query(format!("widgets cleanup: {}", e)))?;
+        let count = tx.execute("DELETE FROM dashboards WHERE id = ?", [id])
+            .map_err(|e| DbError::Query(format!("dashboard delete: {}", e)))?;
+        tx.commit().map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(count > 0)
+    }
+
+    pub fn list_widgets(&self, dashboard_id: &str) -> Result<Vec<Widget>, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare(
+            r#"SELECT id, dashboard_id, title, "type", width, position, config
+               FROM widgets WHERE dashboard_id = ? ORDER BY position ASC"#
+        ).map_err(|e| DbError::Query(e.to_string()))?;
+
+        let iter = stmt.query_map([dashboard_id], |row| {
+            Ok(Widget {
+                id: row.get(0)?,
+                dashboard_id: row.get(1)?,
+                title: row.get(2)?,
+                widget_type: row.get(3)?,
+                width: row.get(4)?,
+                position: row.get(5)?,
+                config: row.get(6)?,
+            })
+        }).map_err(|e| DbError::Query(e.to_string()))?;
+
+        let mut out = Vec::new();
+        for r in iter {
+            out.push(r.map_err(|e| DbError::Query(e.to_string()))?);
+        }
+        Ok(out)
+    }
+
+    pub fn create_widget(
+        &self,
+        dashboard_id: &str,
+        title: &str,
+        widget_type: &str,
+        width: &str,
+        position: i32,
+        config: &str,
+    ) -> Result<String, DbError> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare(
+            r#"INSERT INTO widgets (id, dashboard_id, title, "type", width, position, config, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, now())"#
+        ).map_err(|e| DbError::Query(e.to_string()))?;
+        stmt.execute(duckdb::params![&id, dashboard_id, title, widget_type, width, position, config])
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(id)
+    }
+
+    pub fn update_widget(
+        &self,
+        id: &str,
+        title: &str,
+        widget_type: &str,
+        width: &str,
+        config: &str,
+    ) -> Result<bool, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare(
+            r#"UPDATE widgets SET title = ?, "type" = ?, width = ?, config = ? WHERE id = ?"#
+        ).map_err(|e| DbError::Query(e.to_string()))?;
+        let count = stmt.execute(duckdb::params![title, widget_type, width, config, id])
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(count > 0)
+    }
+
+    pub fn update_widget_positions(&self, positions: &[(String, i32)]) -> Result<(), DbError> {
+        if positions.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let tx = conn.transaction().map_err(|e| DbError::Query(e.to_string()))?;
+        {
+            let mut stmt = tx.prepare("UPDATE widgets SET position = ? WHERE id = ?")
+                .map_err(|e| DbError::Query(e.to_string()))?;
+            for (widget_id, pos) in positions {
+                stmt.execute(duckdb::params![pos, widget_id])
+                    .map_err(|e| DbError::Query(e.to_string()))?;
+            }
+        }
+        tx.commit().map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn delete_widget(&self, id: &str) -> Result<bool, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        let mut stmt = conn.prepare("DELETE FROM widgets WHERE id = ?")
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        let count = stmt.execute([id]).map_err(|e| DbError::Query(e.to_string()))?;
+        Ok(count > 0)
+    }
+
     // ─── S3 sync helpers ────────────────────────────────────────────────────
 
     /// Construye un `S3Client` a partir de la config guardada en el struct.
@@ -1257,6 +1622,67 @@ impl Db {
         tracing::info!("S3 load: logs restaurados desde s3://{}/logs/latest.parquet", cfg.bucket);
         Ok(())
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_retention_days() {
+        assert_eq!(Db::parse_retention("30d").unwrap(), 43200);
+    }
+
+    #[test]
+    fn test_parse_retention_hours() {
+        assert_eq!(Db::parse_retention("24h").unwrap(), 1440);
+    }
+
+    #[test]
+    fn test_parse_retention_minutes() {
+        assert_eq!(Db::parse_retention("60m").unwrap(), 60);
+    }
+
+    #[test]
+    fn test_parse_retention_invalid_alpha() {
+        assert!(Db::parse_retention("abc").is_err());
+    }
+
+    #[test]
+    fn test_parse_retention_invalid_unit() {
+        assert!(Db::parse_retention("30x").is_err());
+    }
+
+    #[test]
+    fn test_parse_retention_empty() {
+        assert!(Db::parse_retention("").is_err());
+    }
+}
+
+// ─── Dashboard / Widget structs ───────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Dashboard {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_by: String,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub widget_count: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Widget {
+    pub id: String,
+    pub dashboard_id: String,
+    pub title: String,
+    #[serde(rename = "type")]
+    pub widget_type: String,
+    pub width: String,
+    pub position: i32,
+    pub config: String,
 }
 
 #[derive(Debug, Clone)]

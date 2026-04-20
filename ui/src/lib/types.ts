@@ -20,7 +20,11 @@ export interface Source {
   id: string;
   name: string;
   description: string | null;
-  retention_days: number;
+  retention: string | null;
+  sampling_enabled: boolean | null;
+  sampling_debug_rate: number | null;
+  sampling_info_rate: number | null;
+  sampling_warn_rate: number | null;
   created_at: string;
 }
 
@@ -94,4 +98,40 @@ export interface ErrorRateResponse {
   total: number;
   errors: number;
   rate: number;
+}
+
+export interface Dashboard {
+  id: string;
+  name: string;
+  description: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  widget_count?: number;
+  widgets?: Widget[];
+}
+
+export interface Widget {
+  id: string;
+  dashboard_id: string;
+  title: string;
+  type: 'bar' | 'line' | 'number' | 'table';
+  width: 'half' | 'full';
+  position: number;
+  config: string;
+}
+
+export interface WidgetConfig {
+  metric: string;
+  field: string | null;
+  group_by: { field: string; interval: string | null } | null;
+  filters: Array<{ field: string; op: string; value: string }>;
+  sources: string[];
+  from: string | null;
+  to: string | null;
+}
+
+export interface QueryResult {
+  data: Array<{ group_key: string | null; value: number }>;
+  meta: { metric: string; group_by: string | null; total_rows: number };
 }

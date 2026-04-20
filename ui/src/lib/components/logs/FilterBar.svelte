@@ -3,8 +3,9 @@
   import ColumnPicker from './ColumnPicker.svelte';
   import AdvancedFilters from './AdvancedFilters.svelte';
   import CustomSelect from '../common/CustomSelect.svelte';
+  import SourceMultiSelect from '../common/SourceMultiSelect.svelte';
   import Modal from '../common/Modal.svelte';
-  import type { SchemaField, FilterCondition } from '$lib/types';
+  import type { SchemaField, FilterCondition, Source } from '$lib/types';
 
   const LEVEL_OPTIONS = [
     { id: '',      label: 'All' },
@@ -67,9 +68,12 @@
     activeColumns: string[];
     schemaFields?: SchemaField[];
     conditions?: FilterCondition[];
+    sources?: Source[];
+    selectedSources?: string[];
     onchange: (filters: Filters) => void;
     oncolumnschange: (cols: string[]) => void;
     onconditionschange?: (conditions: FilterCondition[]) => void;
+    onsourceschange?: (s: string[]) => void;
     isLive?: boolean;
     ontoggleLive?: () => void;
   }
@@ -80,9 +84,12 @@
     activeColumns,
     schemaFields = [],
     conditions = [],
+    sources,
+    selectedSources = [],
     onchange,
     oncolumnschange,
     onconditionschange,
+    onsourceschange,
     isLive = false,
     ontoggleLive,
   }: Props = $props();
@@ -304,6 +311,19 @@
   <!-- ── Segunda barra (colapsable) ────────────────────────────── -->
   {#if showSecondBar}
     <div class="second-bar" role="group" aria-label="Quick filters">
+
+      <!-- Source selector -->
+      {#if sources && onsourceschange}
+        <div class="sb-field sb-field-source">
+          <SourceMultiSelect
+            {sources}
+            value={selectedSources}
+            compact={true}
+            onSelect={onsourceschange}
+          />
+        </div>
+        <div class="sb-divider" aria-hidden="true"></div>
+      {/if}
 
       <!-- Tiempo -->
       <div class="sb-field sb-field-date">
@@ -642,6 +662,7 @@
   }
 
   /* CustomSelect wrappers inside second bar */
+  .sb-field-source    { min-width: 130px; }
   .sb-field-date      { min-width: 130px; }
   .sb-select-wrap     { width: 90px; }
   .sb-select-wrap-env { width: 120px; }

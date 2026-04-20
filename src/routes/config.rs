@@ -16,7 +16,7 @@ use crate::AppError;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FullConfig {
-    pub retention_default_days: i64,
+    pub retention_default: String,
     pub sampling_enabled: bool,
     pub sampling_debug_rate: u8,
     pub sampling_info_rate: u8,
@@ -25,7 +25,7 @@ pub struct FullConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateConfigReq {
-    pub retention_default_days: Option<i64>,
+    pub retention_default: Option<String>,
     pub sampling_enabled: Option<bool>,
     pub sampling_debug_rate: Option<u8>,
     pub sampling_info_rate: Option<u8>,
@@ -47,9 +47,9 @@ async fn get_config(
     let config_map = db.get_all_config().map_err(|e| AppError::Internal(e.to_string()))?;
     
     let config = FullConfig {
-        retention_default_days: config_map.get("retention.default_days")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(30),
+        retention_default: config_map.get("retention.default")
+            .cloned()
+            .unwrap_or_else(|| "30d".to_string()),
         sampling_enabled: config_map.get("sampling.enabled")
             .map(|v| v == "true")
             .unwrap_or(false),
@@ -74,11 +74,10 @@ async fn update_config(
 ) -> Result<impl IntoResponse, AppError> {
     require_admin(&user)?;
     
-    if let Some(days) = payload.retention_default_days {
-        if !(1..=365).contains(&days) {
-            return Err(AppError::BadRequest("retention days must be between 1 and 365".to_string()));
-        }
-        db.set_config_value("retention.default_days", &days.to_string())
+    if let Some(ref retention) = payload.retention_default {
+        Db::parse_retention(retention)
+            .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        db.set_config_value("retention.default", retention)
             .map_err(|e| AppError::Internal(e.to_string()))?;
     }
     

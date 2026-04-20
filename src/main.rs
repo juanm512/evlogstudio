@@ -7,6 +7,7 @@ pub mod error;
 pub use error::AppError;
 
 use std::sync::Arc;
+use std::collections::HashMap;
 
 use tracing::{info, Level};
 use tracing_subscriber::EnvFilter;
@@ -24,6 +25,7 @@ pub struct AppState {
     pub db: Arc<db::Db>,
     pub jwt_secret: String,
     pub sampling_config: Arc<tokio::sync::RwLock<SamplingConfig>>,
+    pub source_sampling: Arc<tokio::sync::RwLock<HashMap<String, SamplingConfig>>>,
 }
 
 impl axum::extract::FromRef<AppState> for Arc<db::Db> {
@@ -81,10 +83,13 @@ async fn main() {
         warn_rate: 100,
     }));
 
+    let source_sampling = Arc::new(tokio::sync::RwLock::new(HashMap::<String, SamplingConfig>::new()));
+
     let app_state = AppState {
         db: shared_db.clone(),
         jwt_secret,
         sampling_config: sampling_config.clone(),
+        source_sampling: source_sampling.clone(),
     };
 
     info!("evlogstudio listening on {}:{}", cfg.host, cfg.port);
@@ -92,7 +97,7 @@ async fn main() {
 
     // Arrancar tareas de fondo
     start_retention_job(shared_db.clone());
-    start_sampling_refresh_job(shared_db.clone(), sampling_config.clone());
+    start_sampling_refresh_job(shared_db.clone(), sampling_config.clone(), source_sampling.clone());
     if cfg.storage_mode == "s3" {
         start_s3_sync_job(shared_db.clone());
     }
@@ -143,17 +148,33 @@ async fn shutdown_signal() {
 
 /// Arranca el job de limpieza de logs antiguos segun retencion
 fn start_retention_job(db: Arc<db::Db>) {
+    const INTERVAL_SECS: u64 = 3600;
+    tracing::info!(
+        "Retention job: scheduled (interval={}s, mode=global — one job handles all sources)",
+        INTERVAL_SECS
+    );
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
-            match db.get_retention_days() {
-                Ok(days) => {
-                    match db.delete_old_logs(days) {
-                        Ok(deleted) => tracing::info!("Retention job: deleted {} old logs", deleted),
-                        Err(e) => tracing::error!("Retention job: error deleting logs: {}", e),
+            tokio::time::sleep(std::time::Duration::from_secs(INTERVAL_SECS)).await;
+            tracing::info!("Retention job: starting run");
+            match db.delete_old_logs() {
+                Ok(deleted) => {
+                    let total: usize = deleted.values().sum();
+                    if total == 0 {
+                        tracing::info!("Retention job: finished — nothing to delete");
+                    } else {
+                        tracing::info!("Retention job: finished — deleted {} log(s) total", total);
+                        let mut breakdown: Vec<(&String, &usize)> = deleted.iter()
+                            .filter(|(_, c)| **c > 0)
+                            .collect();
+                        breakdown.sort_by_key(|(s, _)| s.as_str());
+                        for (source, count) in breakdown {
+                            let label = if source == "_default" { "(default retention)" } else { source.as_str() };
+                            tracing::info!("  Retention job: source={} deleted={}", label, count);
+                        }
                     }
                 }
-                Err(e) => tracing::error!("Retention job: error reading retention_days: {}", e),
+                Err(e) => tracing::error!("Retention job: run failed — {}", e),
             }
         }
     });
@@ -173,10 +194,15 @@ fn start_s3_sync_job(db: Arc<db::Db>) {
     });
 }
 
-/// Actualiza el cache de sampling cada 60s
-fn start_sampling_refresh_job(db: Arc<db::Db>, cache: Arc<tokio::sync::RwLock<SamplingConfig>>) {
+/// Actualiza el cache de sampling global y por source cada 60s
+fn start_sampling_refresh_job(
+    db: Arc<db::Db>,
+    cache: Arc<tokio::sync::RwLock<SamplingConfig>>,
+    source_cache: Arc<tokio::sync::RwLock<HashMap<String, SamplingConfig>>>,
+) {
     tokio::spawn(async move {
         loop {
+            // Cache global
             match db.get_all_config() {
                 Ok(map) => {
                     let mut lock = cache.write().await;
@@ -185,8 +211,28 @@ fn start_sampling_refresh_job(db: Arc<db::Db>, cache: Arc<tokio::sync::RwLock<Sa
                     lock.info_rate = map.get("sampling.info_rate").and_then(|v| v.parse().ok()).unwrap_or(100);
                     lock.warn_rate = map.get("sampling.warn_rate").and_then(|v| v.parse().ok()).unwrap_or(100);
                 }
-                Err(e) => tracing::error!("Sampling refresh job: error: {}", e),
+                Err(e) => tracing::error!("Sampling refresh job: error al leer config global: {}", e),
             }
+
+            // Cache por source — solo sources con sampling_enabled = true entran al map
+            match db.list_sources() {
+                Ok(sources) => {
+                    let mut map = source_cache.write().await;
+                    map.clear();
+                    for s in sources {
+                        if s.sampling_enabled == Some(true) {
+                            map.insert(s.name, SamplingConfig {
+                                enabled: true,
+                                debug_rate: s.sampling_debug_rate.unwrap_or(10) as u8,
+                                info_rate:  s.sampling_info_rate.unwrap_or(100) as u8,
+                                warn_rate:  s.sampling_warn_rate.unwrap_or(100) as u8,
+                            });
+                        }
+                    }
+                }
+                Err(e) => tracing::error!("Sampling refresh job: error al leer sources: {}", e),
+            }
+
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         }
     });

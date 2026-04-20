@@ -11,6 +11,7 @@ pub mod users;
 pub mod analytics;
 pub mod query;
 pub mod config;
+pub mod dashboards;
 pub mod static_files;
 
 pub fn create_router(state: AppState) -> Router {
@@ -29,6 +30,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(sources::router())
         .merge(users::router())
         .merge(config::router())
+        .merge(dashboards::router())
         .fallback(static_files::static_handler)
         .with_state(state)
 }

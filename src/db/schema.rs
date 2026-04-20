@@ -93,3 +93,60 @@ CREATE TABLE IF NOT EXISTS config (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 "#;
+
+/// Agrega columna `retention TEXT` a sources si no existe.
+pub const MIGRATE_SOURCES_ADD_RETENTION_COL: &str =
+    "ALTER TABLE sources ADD COLUMN IF NOT EXISTS retention TEXT";
+
+/// Puebla `retention` desde `retention_days` para filas existentes.
+pub const MIGRATE_SOURCES_POPULATE_RETENTION: &str = r#"
+UPDATE sources SET retention = CAST(retention_days AS VARCHAR) || 'd'
+WHERE retention IS NULL AND retention_days IS NOT NULL;
+UPDATE sources SET retention = '30d' WHERE retention IS NULL;
+"#;
+
+/// Agrega campos de sampling por source.
+pub const MIGRATE_SOURCES_ADD_SAMPLING: &str = r#"
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS sampling_enabled BOOLEAN DEFAULT false;
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS sampling_debug_rate INTEGER DEFAULT 10;
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS sampling_info_rate INTEGER DEFAULT 100;
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS sampling_warn_rate INTEGER DEFAULT 100;
+"#;
+
+/// Puebla defaults de sampling para filas existentes que queden NULL.
+pub const MIGRATE_SOURCES_POPULATE_SAMPLING: &str = r#"
+UPDATE sources SET sampling_enabled = false WHERE sampling_enabled IS NULL;
+UPDATE sources SET sampling_debug_rate = 10 WHERE sampling_debug_rate IS NULL;
+UPDATE sources SET sampling_info_rate = 100 WHERE sampling_info_rate IS NULL;
+UPDATE sources SET sampling_warn_rate = 100 WHERE sampling_warn_rate IS NULL;
+"#;
+
+/// Renombra la clave de config de días (entero) al nuevo formato de string.
+pub const MIGRATE_CONFIG_RETENTION_KEY: &str =
+    "UPDATE config SET key = 'retention.default', value = value || 'd' \
+     WHERE key = 'retention.default_days' \
+     AND value NOT LIKE '%d' AND value NOT LIKE '%h' AND value NOT LIKE '%m'";
+
+pub const CREATE_DASHBOARDS: &str = r#"
+CREATE TABLE IF NOT EXISTS dashboards (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT,
+  created_by  TEXT NOT NULL,
+  created_at  TIMESTAMPTZ DEFAULT now(),
+  updated_at  TIMESTAMPTZ DEFAULT now()
+)
+"#;
+
+pub const CREATE_WIDGETS: &str = r#"
+CREATE TABLE IF NOT EXISTS widgets (
+  id            TEXT PRIMARY KEY,
+  dashboard_id  TEXT NOT NULL,
+  title         TEXT NOT NULL,
+  "type"        TEXT NOT NULL,
+  width         TEXT NOT NULL DEFAULT 'half',
+  position      INTEGER NOT NULL DEFAULT 0,
+  config        TEXT NOT NULL,
+  created_at    TIMESTAMPTZ DEFAULT now()
+)
+"#;

@@ -2,9 +2,8 @@
   import { onMount, onDestroy } from 'svelte';
   import { browser } from '$app/environment';
   import { createQuery, keepPreviousData } from '@tanstack/svelte-query';
-  import { selectedSources } from '$lib/stores';
   import { api } from '$lib/api';
-  import type { Log, LogsResponse, PollResponse, SchemaResponse, FilterCondition, Operator } from '$lib/types';
+  import type { Log, LogsResponse, PollResponse, SchemaResponse, FilterCondition, Operator, Source } from '$lib/types';
   import FilterBar from '$lib/components/logs/FilterBar.svelte';
   import LogTable from '$lib/components/logs/LogTable.svelte';
   import LogDetail from '$lib/components/logs/LogDetail.svelte';
@@ -148,12 +147,15 @@
     return `SELECT id, timestamp, source, service, environment, method, path, status, duration_ms, request_id, error, level, message, fields, ingested_at FROM logs ${where} ORDER BY timestamp DESC LIMIT 50`;
   }
 
-  // ─── Sync Svelte store → rune ─────────────────────────────────────────────────
+  // ─── Sources state ────────────────────────────────────────────────────────────
   let sourcesValue = $state<string[]>([]);
-  $effect(() => {
-    const unsub = selectedSources.subscribe(v => { sourcesValue = v; });
-    return unsub;
-  });
+
+  const sourcesQuery = createQuery(() => ({
+    queryKey: ['sources'],
+    queryFn: () => api.get<Source[]>('/api/sources'),
+    staleTime: 60_000,
+  }));
+  let availableSources = $derived(sourcesQuery.data ?? []);
 
   // Reset pagination + live buffers whenever query params change
   $effect(() => {
@@ -336,9 +338,12 @@
     {isLive}
     schemaFields={allSchemaFields}
     {conditions}
+    sources={availableSources}
+    selectedSources={sourcesValue}
     onchange={(f) => { filters = { ...f }; }}
     oncolumnschange={persistColumns}
     onconditionschange={(c) => { conditions = c; }}
+    onsourceschange={(s) => { sourcesValue = s; cursor = null; }}
     ontoggleLive={toggleLive}
   />
 
