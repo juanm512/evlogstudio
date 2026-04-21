@@ -206,10 +206,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="filter-bar-wrap">
-  <!-- ── Top bar ────────────────────────────────────────────────── -->
   <div class="filter-bar" role="toolbar" aria-label="Log filters">
-
-    <!-- Chevron: colapsa/expande segunda barra -->
     <button
       onclick={() => { showSecondBar = !showSecondBar; }}
       class="chevron-btn"
@@ -224,7 +221,6 @@
       {/if}
     </button>
 
-    <!-- Advanced filters toggle -->
     {#if onconditionschange}
       <button
         onclick={() => { showAdvanced = !showAdvanced; }}
@@ -241,7 +237,6 @@
       </button>
     {/if}
 
-    <!-- Search -->
     <div class="filter-group search-group">
       <span class="search-icon-wrap" aria-hidden="true"><Search size={13} /></span>
       <label for="filter-search" class="sr-only">Search events</label>
@@ -266,10 +261,8 @@
       {/if}
     </div>
 
-    <!-- Spacer -->
     <div class="filter-spacer" aria-hidden="true"></div>
 
-    <!-- Column picker toggle -->
     <button
       bind:this={columnsBtn}
       onclick={() => { showColumnPicker = !showColumnPicker; }}
@@ -281,7 +274,6 @@
       Columns
     </button>
 
-    <!-- Live mode toggle -->
     {#if ontoggleLive}
       <button
         onclick={ontoggleLive}
@@ -294,12 +286,11 @@
       </button>
     {/if}
 
-    <!-- Column picker dropdown -->
     {#if showColumnPicker}
       {@const rect = columnsBtn?.getBoundingClientRect()}
       <ColumnPicker
-        {availableColumns}
-        {activeColumns}
+        availableFields={schemaFields}
+        bind:activeColumns={activeColumns}
         anchorTop={rect ? rect.bottom + 4 : 0}
         anchorRight={rect ? window.innerWidth - rect.right : 0}
         onchange={oncolumnschange}
@@ -308,11 +299,8 @@
     {/if}
   </div>
 
-  <!-- ── Segunda barra (colapsable) ────────────────────────────── -->
   {#if showSecondBar}
     <div class="second-bar" role="group" aria-label="Quick filters">
-
-      <!-- Source selector -->
       {#if sources && onsourceschange}
         <div class="sb-field sb-field-source">
           <SourceMultiSelect
@@ -325,7 +313,6 @@
         <div class="sb-divider" aria-hidden="true"></div>
       {/if}
 
-      <!-- Tiempo -->
       <div class="sb-field sb-field-date">
         <CustomSelect
           options={DATE_PRESETS}
@@ -338,7 +325,6 @@
 
       <div class="sb-divider" aria-hidden="true"></div>
 
-      <!-- Level -->
       <div class="sb-field">
         <span class="sb-label">Level</span>
         <div class="sb-select-wrap">
@@ -352,7 +338,6 @@
         </div>
       </div>
 
-      <!-- Method -->
       <div class="sb-field">
         <span class="sb-label">Method</span>
         <div class="sb-select-wrap">
@@ -366,7 +351,6 @@
         </div>
       </div>
 
-      <!-- Environment -->
       <div class="sb-field">
         <span class="sb-label">Env</span>
         <div class="sb-select-wrap sb-select-wrap-env">
@@ -380,7 +364,6 @@
         </div>
       </div>
 
-      <!-- Status -->
       <div class="sb-field">
         <label for="sb-status" class="sb-label">Status</label>
         <input
@@ -393,11 +376,9 @@
           oninput={emit}
         />
       </div>
-
     </div>
   {/if}
 
-  <!-- ── Advanced filters ───────────────────────────────────────── -->
   {#if showAdvanced && onconditionschange}
     <AdvancedFilters
       {schemaFields}
@@ -407,7 +388,6 @@
   {/if}
 </div>
 
-<!-- Custom date range modal -->
 <Modal
   open={showCustomModal}
   title="Custom date range"
@@ -421,7 +401,6 @@
         type="datetime-local"
         class="cr-input"
         bind:value={pendingFrom}
-        color-scheme="dark"
       />
     </div>
     <div class="cr-field">
@@ -431,7 +410,6 @@
         type="datetime-local"
         class="cr-input"
         bind:value={pendingTo}
-        color-scheme="dark"
       />
     </div>
     <div class="cr-actions">
@@ -442,307 +420,53 @@
 </Modal>
 
 <style>
-  .filter-bar-wrap {
-    display: flex;
-    flex-direction: column;
-    flex-shrink: 0;
-  }
-
-  /* ── Top bar ────────────────────────────────────────────────── */
-  .filter-bar {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 8px;
-    border-bottom: 1px solid var(--color-border-dim);
-    background-color: var(--color-surface);
-    flex-shrink: 0;
-    flex-wrap: nowrap;
-    overflow-x: auto;
-  }
-
-  .chevron-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 24px;
-    height: 24px;
-    flex-shrink: 0;
-    background: transparent;
-    border: none;
-    color: var(--color-text-muted);
-    cursor: pointer;
-    transition: color 0.15s;
-    padding: 0;
-  }
+  .filter-bar-wrap { display: flex; flex-direction: column; flex-shrink: 0; }
+  .filter-bar { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--color-border-dim); background-color: var(--color-surface); flex-shrink: 0; flex-wrap: nowrap; overflow-x: auto; }
+  .chevron-btn { display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; flex-shrink: 0; background: transparent; border: none; color: var(--color-text-muted); cursor: pointer; transition: color 0.15s; padding: 0; }
   .chevron-btn:hover { color: var(--color-text-primary); }
-  .chevron-btn:focus-visible {
-    outline: 2px solid var(--color-brand-primary);
-    outline-offset: 2px;
-  }
-
-  .filter-group {
-    display: flex;
-    align-items: center;
-    position: relative;
-  }
-
-  .search-group {
-    flex: 1;
-    min-width: 180px;
-  }
-
-  .search-icon-wrap {
-    position: absolute;
-    left: 9px;
-    pointer-events: none;
-    z-index: 1;
-    display: flex;
-    align-items: center;
-    color: var(--color-text-muted);
-  }
-
-  .search-clear-btn {
-    position: absolute;
-    right: 6px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 18px;
-    height: 18px;
-    padding: 0;
-    background: transparent;
-    border: none;
-    color: var(--color-text-muted);
-    cursor: pointer;
-    transition: color 0.15s;
-    z-index: 1;
-  }
+  .chevron-btn:focus-visible { outline: 2px solid var(--color-brand-primary); outline-offset: 2px; }
+  .filter-group { display: flex; align-items: center; position: relative; }
+  .search-group { flex: 1; min-width: 180px; }
+  .search-icon-wrap { position: absolute; left: 9px; pointer-events: none; z-index: 1; display: flex; align-items: center; color: var(--color-text-muted); }
+  .search-clear-btn { position: absolute; right: 6px; display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; padding: 0; background: transparent; border: none; color: var(--color-text-muted); cursor: pointer; transition: color 0.15s; z-index: 1; }
   .search-clear-btn:hover { color: var(--color-text-primary); }
-
-  .filter-spacer {
-    flex: 0 1 auto;
-    min-width: 4px;
-  }
-
-  .filter-input {
-    height: 28px;
-    background-color: var(--color-background);
-    border: 1px solid var(--color-border-dim);
-    color: var(--color-text-primary);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    padding: 0 10px 0 28px;
-    outline: none;
-    width: 100%;
-    transition: border-color 0.15s;
-  }
+  .filter-spacer { flex: 0 1 auto; min-width: 4px; }
+  .filter-input { height: 28px; background-color: var(--color-background); border: 1px solid var(--color-border-dim); color: var(--color-text-primary); font-family: var(--font-mono); font-size: 12px; padding: 0 10px 0 28px; outline: none; width: 100%; transition: border-color 0.15s; }
   .filter-input.has-clear { padding-right: 28px; }
-  .filter-input:focus {
-    border-color: var(--color-brand-primary);
-    outline: 2px solid color-mix(in srgb, var(--color-brand-primary) 30%, transparent);
-    outline-offset: 0;
-  }
-
-  .filter-btn {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    height: 28px;
-    padding: 0 10px;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--color-text-secondary);
-    background: transparent;
-    border: 1px solid var(--color-border-dim);
-    cursor: pointer;
-    white-space: nowrap;
-    transition: background 0.15s, color 0.15s, border-color 0.15s;
-    flex-shrink: 0;
-  }
-  .filter-btn:hover {
-    background: var(--color-surface-elevated);
-    color: var(--color-text-primary);
-  }
-  .filter-btn:focus-visible {
-    outline: 2px solid var(--color-brand-primary);
-    outline-offset: 2px;
-  }
-  .filter-btn-active {
-    background: color-mix(in srgb, var(--color-brand-primary) 10%, transparent);
-    border-color: color-mix(in srgb, var(--color-brand-primary) 30%, transparent);
-    color: var(--color-brand-primary);
-  }
-
-  .sr-only {
-    position: absolute; width: 1px; height: 1px;
-    padding: 0; margin: -1px; overflow: hidden;
-    clip: rect(0,0,0,0); white-space: nowrap; border: 0;
-  }
-
+  .filter-input:focus { border-color: var(--color-brand-primary); outline: 2px solid color-mix(in srgb, var(--color-brand-primary) 30%, transparent); outline-offset: 0; }
+  .filter-btn { display: flex; align-items: center; gap: 5px; height: 28px; padding: 0 10px; font-size: 12px; font-weight: 600; color: var(--color-text-secondary); background: transparent; border: 1px solid var(--color-border-dim); cursor: pointer; white-space: nowrap; transition: background 0.15s, color 0.15s, border-color 0.15s; flex-shrink: 0; }
+  .filter-btn:hover { background: var(--color-surface-elevated); color: var(--color-text-primary); }
+  .filter-btn:focus-visible { outline: 2px solid var(--color-brand-primary); outline-offset: 2px; }
+  .filter-btn-active { background: color-mix(in srgb, var(--color-brand-primary) 10%, transparent); border-color: color-mix(in srgb, var(--color-brand-primary) 30%, transparent); color: var(--color-brand-primary); }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
   .live-btn { gap: 7px; }
-  .live-btn-active {
-    background: color-mix(in srgb, var(--color-brand-success) 10%, transparent);
-    border-color: color-mix(in srgb, var(--color-brand-success) 35%, transparent);
-    color: var(--color-brand-success);
-  }
-  .live-btn-active:hover {
-    background: color-mix(in srgb, var(--color-brand-success) 16%, transparent);
-    color: var(--color-brand-success);
-  }
-  .live-dot {
-    display: inline-block;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--color-text-muted);
-    flex-shrink: 0;
-  }
+  .live-btn-active { background: color-mix(in srgb, var(--color-brand-success) 10%, transparent); border-color: color-mix(in srgb, var(--color-brand-success) 35%, transparent); color: var(--color-brand-success); }
+  .live-btn-active:hover { background: color-mix(in srgb, var(--color-brand-success) 16%, transparent); color: var(--color-brand-success); }
+  .live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--color-text-muted); flex-shrink: 0; }
   .live-btn-active .live-dot { background: var(--color-brand-success); }
   .live-dot-pulse { animation: live-pulse 1.4s ease-in-out infinite; }
-  @keyframes live-pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50%       { opacity: 0.4; transform: scale(0.75); }
-  }
-
-  /* ── Segunda barra ──────────────────────────────────────────── */
-  .second-bar {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 5px 8px;
-    border-bottom: 1px solid var(--color-border-dim);
-    background-color: var(--color-surface);
-    flex-shrink: 0;
-    flex-wrap: wrap;
-  }
-
-  .sb-divider {
-    width: 1px;
-    height: 16px;
-    background: var(--color-border-dim);
-    flex-shrink: 0;
-    margin: 0 4px;
-  }
-
-  .sb-field {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    flex-shrink: 0;
-  }
-
-  .sb-label {
-    font-size: 11px;
-    font-weight: 600;
-    font-family: var(--font-mono);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--color-text-muted);
-    white-space: nowrap;
-  }
-
-  .sb-input {
-    height: 26px;
-    background-color: var(--color-background);
-    border: 1px solid var(--color-border-dim);
-    color: var(--color-text-primary);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    padding: 0 6px;
-    outline: none;
-    transition: border-color 0.15s;
-    cursor: text;
-  }
-  .sb-input  { width: 64px; }
-  .sb-input:focus {
-    border-color: var(--color-brand-primary);
-    outline: 2px solid color-mix(in srgb, var(--color-brand-primary) 30%, transparent);
-    outline-offset: 0;
-  }
-
-  /* CustomSelect wrappers inside second bar */
-  .sb-field-source    { min-width: 130px; }
-  .sb-field-date      { min-width: 130px; }
-  .sb-select-wrap     { width: 90px; }
+  @keyframes live-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.75); } }
+  .second-bar { display: flex; align-items: center; gap: 4px; padding: 5px 8px; border-bottom: 1px solid var(--color-border-dim); background-color: var(--color-surface); flex-shrink: 0; flex-wrap: wrap; }
+  .sb-divider { width: 1px; height: 16px; background: var(--color-border-dim); flex-shrink: 0; margin: 0 4px; }
+  .sb-field { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+  .sb-label { font-size: 11px; font-weight: 600; font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-text-muted); white-space: nowrap; }
+  .sb-input { height: 26px; background-color: var(--color-background); border: 1px solid var(--color-border-dim); color: var(--color-text-primary); font-family: var(--font-mono); font-size: 12px; padding: 0 6px; outline: none; transition: border-color 0.15s; cursor: text; width: 64px; }
+  .sb-input:focus { border-color: var(--color-brand-primary); outline: 2px solid color-mix(in srgb, var(--color-brand-primary) 30%, transparent); outline-offset: 0; }
+  .sb-field-source { min-width: 130px; }
+  .sb-field-date { min-width: 130px; }
+  .sb-select-wrap { width: 90px; }
   .sb-select-wrap-env { width: 120px; }
   .sb-field :global(.space-y-1\.5) { margin: 0; }
-
-  /* ── Custom date range modal ────────────────────────────────── */
-  .cr-body {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-  }
-
-  .cr-field {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .cr-label {
-    font-size: 11px;
-    font-family: var(--font-mono);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--color-text-secondary);
-  }
-
-  .cr-input {
-    height: 36px;
-    width: 100%;
-    background: var(--color-background);
-    border: 1px solid var(--color-border-dim);
-    color: var(--color-text-primary);
-    font-family: var(--font-mono);
-    font-size: 13px;
-    padding: 0 10px;
-    outline: none;
-    color-scheme: dark;
-    transition: border-color 0.15s;
-  }
-  .cr-input:focus {
-    border-color: var(--color-brand-primary);
-    outline: 2px solid color-mix(in srgb, var(--color-brand-primary) 30%, transparent);
-    outline-offset: 0;
-  }
-
-  .cr-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-    padding-top: 4px;
-  }
-
-  .cr-btn {
-    height: 32px;
-    padding: 0 18px;
-    font-size: 12px;
-    font-weight: 600;
-    font-family: var(--font-mono);
-    border: 1px solid var(--color-border-dim);
-    cursor: pointer;
-    transition: background 0.15s, color 0.15s;
-  }
+  .cr-body { display: flex; flex-direction: column; gap: 16px; }
+  .cr-field { display: flex; flex-direction: column; gap: 6px; }
+  .cr-label { font-size: 11px; font-family: var(--font-mono); font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-text-secondary); }
+  .cr-input { height: 36px; width: 100%; background: var(--color-background); border: 1px solid var(--color-border-dim); color: var(--color-text-primary); font-family: var(--font-mono); font-size: 13px; padding: 0 10px; outline: none; color-scheme: dark; transition: border-color 0.15s; }
+  .cr-input:focus { border-color: var(--color-brand-primary); outline: 2px solid color-mix(in srgb, var(--color-brand-primary) 30%, transparent); outline-offset: 0; }
+  .cr-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
+  .cr-btn { height: 32px; padding: 0 18px; font-size: 12px; font-weight: 600; font-family: var(--font-mono); border: 1px solid var(--color-border-dim); cursor: pointer; transition: background 0.15s, color 0.15s; }
   .cr-btn:focus-visible { outline: 2px solid var(--color-brand-primary); outline-offset: 2px; }
-
-  .cr-btn-cancel {
-    background: transparent;
-    color: var(--color-text-secondary);
-  }
-  .cr-btn-cancel:hover {
-    background: var(--color-surface-elevated);
-    color: var(--color-text-primary);
-  }
-
-  .cr-btn-apply {
-    background: var(--color-brand-primary);
-    color: #fff;
-    border-color: var(--color-brand-primary);
-  }
-  .cr-btn-apply:hover {
-    background: color-mix(in srgb, var(--color-brand-primary) 80%, #000);
-  }
+  .cr-btn-cancel { background: transparent; color: var(--color-text-secondary); }
+  .cr-btn-cancel:hover { background: var(--color-surface-elevated); color: var(--color-text-primary); }
+  .cr-btn-apply { background: var(--color-brand-primary); color: #fff; border-color: var(--color-brand-primary); }
+  .cr-btn-apply:hover { background: color-mix(in srgb, var(--color-brand-primary) 80%, #000); }
 </style>

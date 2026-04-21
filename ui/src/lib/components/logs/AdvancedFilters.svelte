@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Plus, X, Trash2, Save, BookOpen } from 'lucide-svelte';
   import CustomSelect from '$lib/components/common/CustomSelect.svelte';
+  import FieldPicker from '$lib/components/common/FieldPicker.svelte';
   import Modal from '$lib/components/common/Modal.svelte';
   import type { SchemaField, FilterCondition, Operator } from '$lib/types';
 
@@ -44,12 +45,6 @@
   // ─── Field options (flat, prefixed by source if multiple) ─────────────────
   let sources = $derived([...new Set(schemaFields.map(f => f.source))].sort());
 
-  let fieldOptions = $derived(
-    schemaFields.map(f => ({
-      id: f.field_path,
-      label: sources.length > 1 ? `${f.source} / ${f.field_path}` : f.field_path,
-    })).filter((v, i, arr) => arr.findIndex(x => x.id === v.id) === i)
-  );
 
   function opOptions(fieldPath: string) {
     const allowed = opsForField(fieldPath);
@@ -158,7 +153,7 @@
 <div class="af-panel" role="region" aria-label="Advanced filters">
   {#if schemaFields.length === 0}
     <p class="af-empty">
-      Enviá logs primero para ver los campos disponibles.
+      Send logs first to see available fields.
     </p>
   {:else if conditions.length === 0}
     <p class="af-empty">
@@ -171,11 +166,11 @@
         <li class="af-row">
           <!-- Field selector -->
           <div class="af-select-wrap af-select-field">
-            <CustomSelect
-              options={fieldOptions}
-              value={cond.field}
+            <FieldPicker
+              availableFields={schemaFields}
+              selectedField={cond.field}
               compact={true}
-              placeholder="Select field"
+              placeholder="Field"
               onSelect={(id) => updateField(cond.id, id)}
             />
           </div>

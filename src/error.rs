@@ -19,6 +19,8 @@ pub enum AppError {
     BadRequest(String),
     #[error("internal error: {0}")]
     Internal(String),
+    #[error("too many requests")]
+    TooManyRequests,
 }
 
 impl IntoResponse for AppError {
@@ -33,6 +35,7 @@ impl IntoResponse for AppError {
                 tracing::error!("Internal error: {}", e);
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal server error".to_string())
             }
+            AppError::TooManyRequests => (StatusCode::TOO_MANY_REQUESTS, "too many requests".to_string()),
         };
 
         let body = Json(json!({

@@ -177,8 +177,16 @@ impl Db {
                 Ok(db)
             }
 
+            "memory" => {
+                let conn = Connection::open_in_memory()
+                    .map_err(|e| DbError::Open(e.to_string()))?;
+                let db = Db { conn: Mutex::new(conn), s3_cfg: None };
+                db.run_migrations()?;
+                db.seed_config()?;
+                Ok(db)
+            }
             other => panic!(
-                "STORAGE_MODE inválido: '{}'. Valores válidos: local, motherduck, s3",
+                "STORAGE_MODE inválido: '{}'. Valores válidos: local, motherduck, s3, memory",
                 other
             ),
         }
@@ -658,8 +666,9 @@ impl Db {
         }
 
         use rand::RngCore;
-        let mut bytes = [0u8; 64];
-        rand::thread_rng().fill_bytes(&mut bytes);
+        use rand::rngs::OsRng;
+        let mut bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut bytes);
         let secret: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
         
         self.set_config_value("jwt.secret", &secret)?;
@@ -681,7 +690,11 @@ impl Db {
         };
         
         let salt = SaltString::generate(&mut OsRng);
-        let argon2 = Argon2::default();
+        let argon2 = Argon2::new(
+            argon2::Algorithm::Argon2id,
+            argon2::Version::V0x13,
+            argon2::Params::new(65536, 2, 1, None).unwrap(),
+        );
         let password_hash = argon2.hash_password(password.as_bytes(), &salt)
             .map_err(|e| DbError::Query(format!("Password hash error: {}", e)))?
             .to_string();
@@ -931,11 +944,12 @@ impl Db {
     }
 
     pub fn create_ingest_token(&self, name: &str, source_name: &str, created_by: &str) -> Result<(String, String), DbError> {
+        use rand::rngs::OsRng;
         use rand::RngCore;
         use sha2::{Sha256, Digest};
         
         let mut bytes = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut bytes);
+        OsRng.fill_bytes(&mut bytes);
         let token_real = format!("tok_{}", hex::encode(bytes));
         
         let mut hasher = Sha256::new();
@@ -1006,21 +1020,35 @@ impl Db {
 
     pub fn verify_ingest_token(&self, raw_token: &str) -> Result<Option<String>, DbError> {
         use sha2::{Sha256, Digest};
+        use subtle::ConstantTimeEq;
+
         let mut hasher = Sha256::new();
         hasher.update(raw_token.as_bytes());
-        let token_hash = hex::encode(hasher.finalize());
+        let provided_hash = hex::encode(hasher.finalize());
         
         let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
         
-        let mut stmt = conn.prepare("SELECT source FROM ingest_tokens WHERE token_hash = ? AND revoked_at IS NULL")
+        // Buscamos por el hash. Aunque la DB compare strings, el hecho de que compare HASHES
+        // ya mitiga ataques de timing sobre el token original.
+        // Recuperamos el hash de la DB para hacer una comparacion final en tiempo constante en Rust.
+        let mut stmt = conn.prepare("SELECT source, token_hash FROM ingest_tokens WHERE token_hash = ? AND revoked_at IS NULL")
             .map_err(|e| DbError::Query(e.to_string()))?;
             
-        let mut rows = stmt.query([&token_hash]).map_err(|e| DbError::Query(e.to_string()))?;
+        let mut rows = stmt.query([&provided_hash]).map_err(|e| DbError::Query(e.to_string()))?;
         if let Some(row) = rows.next().map_err(|e| DbError::Query(e.to_string()))? {
             let source: String = row.get(0).map_err(|e| DbError::Query(e.to_string()))?;
-            let mut upd_stmt = conn.prepare("UPDATE ingest_tokens SET last_used = now() WHERE token_hash = ?").map_err(|e| DbError::Query(e.to_string()))?;
-            let _ = upd_stmt.execute([&token_hash]);
-            Ok(Some(source))
+            let stored_hash: String = row.get(1).map_err(|e| DbError::Query(e.to_string()))?;
+
+            // Comparación en tiempo constante en Rust
+            let match_ok = provided_hash.as_bytes().ct_eq(stored_hash.as_bytes()).unwrap_u8() == 1;
+
+            if match_ok {
+                let mut upd_stmt = conn.prepare("UPDATE ingest_tokens SET last_used = now() WHERE token_hash = ?").map_err(|e| DbError::Query(e.to_string()))?;
+                let _ = upd_stmt.execute([&provided_hash]);
+                Ok(Some(source))
+            } else {
+                Ok(None)
+            }
         } else {
             Ok(None)
         }

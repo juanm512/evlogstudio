@@ -1,3 +1,5 @@
+use axum::http::header as ax_http_headers;
+use tower_http::set_header::SetResponseHeaderLayer;
 use axum::{routing::{get, post}, Router};
 use crate::AppState;
 
@@ -22,6 +24,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/logs", get(logs::get_logs))
         .route("/api/schema", get(schema::get_schema))
         .route("/auth/login", post(auth::login_handler))
+        .route("/auth/verify", get(auth::verify_handler))
         .route("/api/setup", get(auth::setup_get_handler).post(auth::setup_post_handler))
         .route("/api/analytics/volume", get(analytics::get_volume))
         .route("/api/analytics/errors", get(analytics::get_error_rate))
@@ -31,6 +34,18 @@ pub fn create_router(state: AppState) -> Router {
         .merge(users::router())
         .merge(config::router())
         .merge(dashboards::router())
+        .layer(SetResponseHeaderLayer::if_not_present(
+            ax_http_headers::X_CONTENT_TYPE_OPTIONS,
+            ax_http_headers::HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            ax_http_headers::X_FRAME_OPTIONS,
+            ax_http_headers::HeaderValue::from_static("DENY"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            ax_http_headers::REFERRER_POLICY,
+            ax_http_headers::HeaderValue::from_static("strict-origin-when-cross-origin"),
+        ))
         .fallback(static_files::static_handler)
         .with_state(state)
 }

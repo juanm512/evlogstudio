@@ -178,6 +178,10 @@ mod tests {
                 info_rate: 100,
                 warn_rate: 100,
             })),
+            source_sampling: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            login_limiter: Arc::new(governor::RateLimiter::dashmap(
+                governor::Quota::per_minute(std::num::NonZeroU32::new(100).unwrap())
+            )),
         };
 
         let app = Router::new()
@@ -274,6 +278,10 @@ mod tests {
                 info_rate: 100,
                 warn_rate: 100,
             })),
+            source_sampling: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            login_limiter: Arc::new(governor::RateLimiter::dashmap(
+                governor::Quota::per_minute(std::num::NonZeroU32::new(100).unwrap())
+            )),
         };
 
         let app = Router::new()

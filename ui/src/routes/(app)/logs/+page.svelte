@@ -139,11 +139,7 @@
         case 'exists':   parts.push(`${extract} IS NOT NULL`); break;
       }
     }
-
-    const where = parts.length > 0
-      ? `WHERE ${parts.join(' AND ')}`
-      : '';
-
+    const where = parts.length > 0 ? `WHERE ${parts.join(' AND ')}` : '';
     return `SELECT id, timestamp, source, service, environment, method, path, status, duration_ms, request_id, error, level, message, fields, ingested_at FROM logs ${where} ORDER BY timestamp DESC LIMIT 50`;
   }
 
@@ -289,7 +285,6 @@
       secondsAgo  = 0;
       if (res.count > 0) {
         lastId = res.last_id;
-        // poll returns ascending order → reverse so newest is first; filter by conditions client-side
         const incoming = [...res.logs].reverse().filter(matchesConditions);
         if (atTop) {
           liveLogs = [...incoming, ...liveLogs];
@@ -298,9 +293,7 @@
           newLogsBuffer = [...incoming, ...newLogsBuffer];
         }
       }
-    } catch {
-      // silent — don't disrupt UX on transient errors
-    }
+    } catch { /* silent */ }
   }
 
   function flushBuffer() {
@@ -312,7 +305,6 @@
   function toggleLive() {
     isLive = !isLive;
     if (isLive) {
-      // Initialize lastId from most recent visible log (DESC order → index 0)
       lastId      = allLogs[0]?.id ?? null;
       lastUpdated = null;
       secondsAgo  = 0;
@@ -330,7 +322,6 @@
 </script>
 
 <div class="logs-page">
-  <!-- Filter Bar -->
   <FilterBar
     {filters}
     {availableColumns}
@@ -347,9 +338,7 @@
     ontoggleLive={toggleLive}
   />
 
-  <!-- Main area: table + optional detail panel -->
   <div class="logs-body">
-    <!-- Table area -->
     <div class="table-area">
       {#if logsQuery.isPending}
         <div class="status-center">
@@ -364,7 +353,6 @@
           <p class="hint-text">Check your backend connection and filters.</p>
         </div>
       {:else}
-        <!-- New logs banner -->
         {#if newLogsBuffer.length > 0 && !atTop}
           <button class="new-logs-banner" onclick={flushBuffer} aria-live="polite">
             ↑ {newLogsBuffer.length} new log{newLogsBuffer.length !== 1 ? 's' : ''} — click to view
@@ -378,10 +366,9 @@
           schemaFields={schemaQuery.data?.fields ?? []}
           bind:scrollEl={tableScrollEl}
           onselect={(log) => { selectedLog = log; }}
-          onsort={(_detail) => { /* reserved for server-side sort */ }}
+          onsort={(_detail) => { /* sorting */ }}
         />
 
-        <!-- Load more / count bar -->
         {#if nextCursor}
           <div class="load-more-bar">
             <button
@@ -426,106 +413,22 @@
 </div>
 
 <style>
-  .logs-page {
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-    min-height: 0;
-    height: 100%;
-  }
-
-  .logs-body {
-    display: flex;
-    flex: 1;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .table-area {
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    position: relative;
-  }
-
-  .status-center {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 64px 24px;
-    color: var(--color-text-muted);
-  }
-
-  .text-muted  { color: var(--color-text-muted); font-size: 14px; }
-  .err-text    { font-size: 13px; font-family: var(--font-mono); color: var(--color-brand-danger); }
-  .hint-text   { font-size: 12px; color: var(--color-text-muted); margin-top: 4px; }
+  .logs-page { display: flex; flex-direction: column; flex: 1; min-height: 0; height: 100%; }
+  .logs-body { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+  .table-area { display: flex; flex-direction: column; flex: 1; min-width: 0; overflow: hidden; position: relative; }
+  .status-center { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 64px 24px; color: var(--color-text-muted); }
+  .text-muted { color: var(--color-text-muted); font-size: 14px; }
+  .err-text { font-size: 13px; font-family: var(--font-mono); color: var(--color-brand-danger); }
+  .hint-text { font-size: 12px; color: var(--color-text-muted); margin-top: 4px; }
   .count-label { font-size: 12px; color: var(--color-text-muted); }
-  .update-ts   { font-size: 12px; font-family: var(--font-mono); color: var(--color-brand-success); margin-left: auto; }
-
+  .update-ts { font-size: 12px; font-family: var(--font-mono); color: var(--color-brand-success); margin-left: auto; }
   :global(.spin-icon) { animation: spin 1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-
-  .load-more-bar {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 8px 12px;
-    border-top: 1px solid var(--color-border-dim);
-    background-color: var(--color-surface);
-    flex-shrink: 0;
-  }
+  .load-more-bar { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-top: 1px solid var(--color-border-dim); background-color: var(--color-surface); flex-shrink: 0; }
   .justify-end { justify-content: flex-end; }
-
-  .load-more-btn {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 5px 14px;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--color-text-secondary);
-    background: transparent;
-    border: 1px solid var(--color-border-dim);
-    cursor: pointer;
-    transition: background 0.15s, color 0.15s;
-  }
-  .load-more-btn:hover:not(:disabled) {
-    background: var(--color-surface-elevated);
-    color: var(--color-text-primary);
-  }
+  .load-more-btn { display: flex; align-items: center; gap: 6px; padding: 5px 14px; font-size: 12px; font-weight: 600; color: var(--color-text-secondary); background: transparent; border: 1px solid var(--color-border-dim); cursor: pointer; transition: background 0.15s, color 0.15s; }
+  .load-more-btn:hover:not(:disabled) { background: var(--color-surface-elevated); color: var(--color-text-primary); }
   .load-more-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .load-more-btn:focus-visible { outline: 2px solid var(--color-brand-primary); outline-offset: 2px; }
-
-  /* New logs banner */
-  .new-logs-banner {
-    position: absolute;
-    top: 8px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 10;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 16px;
-    font-size: 12px;
-    font-weight: 600;
-    font-family: var(--font-mono);
-    color: var(--color-brand-success);
-    background: color-mix(in srgb, var(--color-brand-success) 12%, var(--color-surface));
-    border: 1px solid color-mix(in srgb, var(--color-brand-success) 35%, transparent);
-    cursor: pointer;
-    white-space: nowrap;
-    transition: background 0.15s;
-  }
-  .new-logs-banner:hover {
-    background: color-mix(in srgb, var(--color-brand-success) 20%, var(--color-surface));
-  }
-  .new-logs-banner:focus-visible {
-    outline: 2px solid var(--color-brand-primary);
-    outline-offset: 2px;
-  }
+  .new-logs-banner { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 10; display: flex; align-items: center; gap: 6px; padding: 6px 16px; font-size: 12px; font-weight: 600; font-family: var(--font-mono); color: var(--color-brand-success); background: color-mix(in srgb, var(--color-brand-success) 12%, var(--color-surface)); border: 1px solid color-mix(in srgb, var(--color-brand-success) 35%, transparent); cursor: pointer; white-space: nowrap; transition: background 0.15s; }
+  .new-logs-banner:hover { background: color-mix(in srgb, var(--color-brand-success) 20%, var(--color-surface)); }
 </style>

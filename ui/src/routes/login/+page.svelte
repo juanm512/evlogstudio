@@ -6,12 +6,30 @@
   import { onMount } from 'svelte';
 
   onMount(async () => {
+    // 1. Check for setup
     try {
       const health = await api.get<{ setup_required: boolean }>('/health');
       if (health.setup_required) {
         goto('/setup');
+        return;
       }
     } catch (e) {}
+
+    // 2. Check if already logged in
+    const token = localStorage.getItem('token');
+    if (token) {
+      try {
+        const user = await api.get<{ email: string; role: string }>('/auth/verify');
+        currentUser.set(user);
+        goto('/logs');
+      } catch (e) {
+        // Token invalid, clear it
+        localStorage.removeItem('token');
+        localStorage.removeItem('role');
+        localStorage.removeItem('email');
+        currentUser.set(null);
+      }
+    }
   });
 
   let email = '';
