@@ -68,20 +68,20 @@
   }
 
   // ─── Build query URL ──────────────────────────────────────────────────────────
-  function buildLogsUrl(f: Filters, sources: string[], cur: string | null): string {
-    const params = new URLSearchParams();
-    if (f.search)      params.set('search', f.search);
-    if (f.from)        params.set('from', new Date(f.from).toISOString());
-    if (f.to)          params.set('to',   new Date(f.to).toISOString());
-    if (sources.length === 1) params.set('source', sources[0]);
-    if (f.level)       params.set('level', f.level);
-    if (f.method)      params.set('method', f.method);
-    if (f.environment) params.set('environment', f.environment);
-    if (f.status)      params.set('status', f.status);
-    if (cur) params.set('cursor', cur);
-    params.set('limit', '100');
-    return `/api/logs?${params.toString()}`;
-  }
+  // function buildLogsUrl(f: Filters, sources: string[], cur: string | null): string {
+  //   const params = new URLSearchParams();
+  //   if (f.search)      params.set('search', f.search);
+  //   if (f.from)        params.set('from', new Date(f.from).toISOString());
+  //   if (f.to)          params.set('to',   new Date(f.to).toISOString());
+  //   if (sources.length === 1) params.set('source', sources[0]);
+  //   if (f.level)       params.set('level', f.level);
+  //   if (f.method)      params.set('method', f.method);
+  //   if (f.environment) params.set('environment', f.environment);
+  //   if (f.status)      params.set('status', f.status);
+  //   if (cur) params.set('cursor', cur);
+  //   params.set('limit', '100');
+  //   return `/api/logs?${params.toString()}`;
+  // }
 
   function buildPollUrl(): string {
     const params = new URLSearchParams();
@@ -91,9 +91,9 @@
     return `/api/logs/poll?${params.toString()}`;
   }
 
-  function esc(v: string): string {
-    return v.replace(/'/g, "''");
-  }
+  // function esc(v: string): string {
+  //   return v.replace(/'/g, "''");
+  // }
 
   // Top-level DB columns — referenced directly, not via json_extract_string
   const TOP_LEVEL_COLS = new Set([
@@ -101,46 +101,42 @@
     'service', 'environment', 'method', 'path', 'status', 'duration_ms', 'request_id', 'error',
   ]);
 
-  function buildAdvancedSql(f: Filters, sources: string[], conds: FilterCondition[]): string {
-    const parts: string[] = [];
-
-    if (sources.length > 0) {
-      const quoted = sources.map(s => `'${esc(s)}'`).join(', ');
-      parts.push(`source IN (${quoted})`);
-    }
-    if (f.search) parts.push(`lower(message) LIKE lower('%${esc(f.search)}%')`);
-    if (f.from)   parts.push(`timestamp >= '${new Date(f.from).toISOString()}'`);
-    if (f.to)     parts.push(`timestamp <= '${new Date(f.to).toISOString()}'`);
+  function buildSearchRequest(f: Filters, sources: string[], conds: FilterCondition[], cur: string | null = null, lim: number = 100) {
+    const apiConds = [];
+    if (f.level) apiConds.push({ field: 'level', operator: '=', value: f.level });
+    if (f.method) apiConds.push({ field: 'method', operator: '=', value: f.method });
+    if (f.environment) apiConds.push({ field: 'environment', operator: '=', value: f.environment });
+    if (f.status) apiConds.push({ field: 'status', operator: '=', value: f.status });
 
     for (const c of conds) {
       if (!c.field) continue;
       if (c.operator !== 'exists' && c.value.trim() === '') continue;
-      const field = esc(c.field);
-      const val   = esc(c.value);
-      // Top-level columns use the column name directly; JSON fields use json_extract_string
-      const extract = TOP_LEVEL_COLS.has(c.field)
-        ? c.field
-        : `json_extract_string(fields, '$.${field}')`;
-      switch (c.operator as Operator) {
-        case 'eq':       parts.push(`${extract} = '${val}'`); break;
-        case 'neq':      parts.push(`${extract} != '${val}'`); break;
-        case 'contains': parts.push(`${extract} LIKE '%${val}%'`); break;
-        case 'starts':   parts.push(`${extract} LIKE '${val}%'`); break;
-        case 'gt': {
-          const num = parseFloat(c.value);
-          if (!isNaN(num)) parts.push(`CAST(${extract} AS DOUBLE) > ${num}`);
-          break;
-        }
-        case 'lt': {
-          const num = parseFloat(c.value);
-          if (!isNaN(num)) parts.push(`CAST(${extract} AS DOUBLE) < ${num}`);
-          break;
-        }
-        case 'exists':   parts.push(`${extract} IS NOT NULL`); break;
+      
+      let operator = '=';
+      switch (c.operator) {
+        case 'neq': operator = '!='; break;
+        case 'contains': operator = 'contains'; break;
+        case 'starts': operator = 'starts_with'; break;
+        case 'gt': operator = '>'; break;
+        case 'lt': operator = '<'; break;
+        case 'exists': operator = 'exists'; break;
       }
+
+      apiConds.push({
+        field: c.field,
+        operator,
+        value: c.value
+      });
     }
-    const where = parts.length > 0 ? `WHERE ${parts.join(' AND ')}` : '';
-    return `SELECT id, timestamp, source, service, environment, method, path, status, duration_ms, request_id, error, level, message, fields, ingested_at FROM logs ${where} ORDER BY timestamp DESC LIMIT 50`;
+
+    return {
+      source: sources.length === 1 ? sources[0] : null,
+      from: f.from ? new Date(f.from).toISOString() : null,
+      to: f.to ? new Date(f.to).toISOString() : null,
+      conditions: apiConds,
+      limit: lim,
+      cursor: cur
+    };
   }
 
   // ─── Sources state ────────────────────────────────────────────────────────────
@@ -170,7 +166,7 @@
   $effect(() => {
     const el = tableScrollEl;
     if (!el) return;
-    function onScroll() { atTop = el.scrollTop < 5; }
+    function onScroll() { atTop = (el as HTMLDivElement).scrollTop < 5; }
     el.addEventListener('scroll', onScroll, { passive: true });
     return () => el.removeEventListener('scroll', onScroll);
   });
@@ -201,18 +197,20 @@
 
   let allSchemaFields = $derived([
     ...BUILTIN_FIELDS,
-    ...(schemaQuery.data?.fields ?? []),
+    ...(schemaQuery.data?.fields ?? []).map(f => {
+      if (f.field_path === 'duration' || f.field_path === 'duration_ms' || f.field_path === 'status') {
+        return { ...f, field_type: 'number' };
+      }
+      return f;
+    }),
   ]);
 
   // ─── Logs query ───────────────────────────────────────────────────────────────
   const logsQuery = createQuery(() => ({
     queryKey: ['logs', filters.search, filters.from, filters.to, filters.level, filters.method, filters.environment, filters.status, ...sourcesValue, ...conditions.map(c => `${c.id}:${c.field}:${c.operator}:${c.value}`)],
     queryFn: async () => {
-      if (conditions.length > 0) {
-        const sql = buildAdvancedSql(filters, sourcesValue, conditions);
-        return api.post<{ logs: Log[]; next_cursor: string | null }>('/api/query', { sql });
-      }
-      return api.get<LogsResponse>(buildLogsUrl(filters, sourcesValue, null));
+      const payload = buildSearchRequest(filters, sourcesValue, conditions);
+      return api.post<LogsResponse>('/api/logs/search', payload);
     },
     staleTime: 30_000,
     placeholderData: keepPreviousData,
@@ -235,7 +233,8 @@
     if (!cur || loadingMore) return;
     loadingMore = true;
     try {
-      const res = await api.get<LogsResponse>(buildLogsUrl(filters, sourcesValue, cur));
+      const payload = buildSearchRequest(filters, sourcesValue, conditions, cur);
+      const res = await api.post<LogsResponse>('/api/logs/search', payload);
       extraLogs = [...extraLogs, ...res.logs];
       cursor    = res.next_cursor;
     } finally {
@@ -257,7 +256,7 @@
       if (!c.field) continue;
       if (c.operator !== 'exists' && c.value.trim() === '') continue;
       const raw = TOP_LEVEL_COLS.has(c.field)
-        ? (log as Record<string, unknown>)[c.field]
+        ? (log)[c.field as keyof Log]
         : (log.fields as Record<string, unknown>)?.[c.field];
       const strVal = raw == null ? null : String(raw);
       switch (c.operator as Operator) {

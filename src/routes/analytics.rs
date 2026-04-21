@@ -29,6 +29,22 @@ pub struct ErrorRateQuery {
     pub to: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PercentileQuery {
+    pub source: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TopValuesQuery {
+    pub source: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub field: String,
+    pub limit: Option<u32>,
+}
+
 // ─── Response structs ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -138,6 +154,36 @@ pub async fn get_error_rate(
             rate: result.rate,
         }),
     ))
+}
+
+pub async fn get_percentiles(
+    _user: AuthUser,
+    State(db): State<Arc<Db>>,
+    Query(params): Query<PercentileQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let _now = Utc::now();
+    let from_dt = params.from.as_ref().and_then(|s| parse_optional_dt(s, "from").ok());
+    let to_dt = params.to.as_ref().and_then(|s| parse_optional_dt(s, "to").ok());
+
+    let result = db.analytics_percentiles(params.source.as_deref(), from_dt, to_dt)
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    Ok((StatusCode::OK, Json(result)))
+}
+
+pub async fn get_top_values(
+    _user: AuthUser,
+    State(db): State<Arc<Db>>,
+    Query(params): Query<TopValuesQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let from_dt = params.from.as_ref().and_then(|s| parse_optional_dt(s, "from").ok());
+    let to_dt = params.to.as_ref().and_then(|s| parse_optional_dt(s, "to").ok());
+    let limit = params.limit.unwrap_or(10);
+
+    let result = db.analytics_top_values(params.source.as_deref(), from_dt, to_dt, &params.field, limit)
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    Ok((StatusCode::OK, Json(result)))
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

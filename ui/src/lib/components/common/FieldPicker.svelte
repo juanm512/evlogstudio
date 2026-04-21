@@ -150,7 +150,7 @@
           autofocus
         />
         {#if searchQuery}
-          <button onclick={() => searchQuery = ''} class="clear-btn">
+          <button onclick={(e) => { e.stopPropagation(); searchQuery = ''; }} class="clear-btn">
             <X size={14} />
           </button>
         {/if}
@@ -167,7 +167,7 @@
               type="button"
               class="tree-row {isSelected ? 'selected' : ''}" 
               style="padding-left: {depth * 16 + (isLeaf ? 16 : 0)}px"
-              onclick={() => isLeaf ? handleSelect(node.fullPath!) : toggleExpand(node, currentPath)}
+              onclick={(e) => { e.stopPropagation(); isLeaf ? handleSelect(node.fullPath!) : toggleExpand(node, currentPath) }}
             >
               {#if !isLeaf}
                 <span class="icon-toggle">

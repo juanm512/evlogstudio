@@ -3,7 +3,7 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query';
   import { api } from '$lib/api';
   import { currentUser } from '$lib/stores';
-  import type { VolumeResponse, ErrorRateResponse, LogsResponse, SchemaResponse, Source } from '$lib/types';
+  import type { VolumeResponse, ErrorRateResponse, LogsResponse, SchemaResponse, Source, Log } from '$lib/types';
   import MetricCard from '$lib/components/analytics/MetricCard.svelte';
   import VolumeChart from '$lib/components/analytics/VolumeChart.svelte';
   import CustomSelect from '$lib/components/common/CustomSelect.svelte';
@@ -144,22 +144,19 @@
   let fieldPaths = $derived(schemaQuery.data?.fields.map(f => f.field_path) ?? []);
   let hasDurationMs = $derived(fieldPaths.includes('duration_ms'));
 
-  function buildPercentileSQL(): string {
-    let where = `fields->>'duration_ms' IS NOT NULL`;
-    if (sourcesValue.length === 1) where += ` AND source = '${sanitize(sourcesValue[0])}'`;
-    where += ` AND timestamp >= '${sanitize(from())}'`;
-    where += ` AND timestamp <= '${sanitize(to)}'`;
-    const expr = `TRY_CAST(fields->>'duration_ms' AS DOUBLE)`;
-    return `SELECT quantile_cont(${expr}, 0.50) as p50, quantile_cont(${expr}, 0.95) as p95, quantile_cont(${expr}, 0.99) as p99 FROM logs WHERE ${where}`;
-  }
-
-  interface PercentileRow { p50: number | null; p95: number | null; p99: number | null; }
-  interface JsonQueryResponse<T> { rows: T[]; }
+  interface PercentileResult { p50: number | null; p95: number | null; p99: number | null; }
 
   const percentileQuery = createQuery(() => ({
     queryKey: ['analytics', 'percentiles', from(), to, ...sourcesValue],
-    queryFn: () => api.post<JsonQueryResponse<PercentileRow>>('/api/query/json', { sql: buildPercentileSQL() }),
-    enabled: isAdmin && hasDurationMs,
+    queryFn: () => {
+      const params = new URLSearchParams({
+        from: from(),
+        to,
+        ...(sourcesValue.length === 1 ? { source: sourcesValue[0] } : {})
+      });
+      return api.get<PercentileResult>(`/api/analytics/percentiles?${params}`);
+    },
+    enabled: isAdmin,
     refetchInterval: 30_000,
     refetchIntervalInBackground: false,
   }));
@@ -169,9 +166,9 @@
     return `${Math.round(v)}ms`;
   }
 
-  let p50 = $derived(formatMs(percentileQuery.data?.rows[0]?.p50));
-  let p95 = $derived(formatMs(percentileQuery.data?.rows[0]?.p95));
-  let p99 = $derived(formatMs(percentileQuery.data?.rows[0]?.p99));
+  let p50 = $derived(formatMs(percentileQuery.data?.p50));
+  let p95 = $derived(formatMs(percentileQuery.data?.p95));
+  let p99 = $derived(formatMs(percentileQuery.data?.p99));
 
   // ─── Derived metric values ────────────────────────────────────────────────────
   let totalLogs = $derived(volumeQuery.data?.data.reduce((acc, p) => acc + p.count, 0) ?? '—');
@@ -183,19 +180,17 @@
   let singleSource = $derived(sourcesValue.length === 1 ? sourcesValue[0] : null);
 
   // ─── Export CSV ───────────────────────────────────────────────────────────────
-  function buildExportSQL(): string {
-    let where = '1=1';
-    if (sourcesValue.length === 1) where += ` AND source = '${sanitize(sourcesValue[0])}'`;
-    where += ` AND timestamp >= '${sanitize(from())}'`;
-    where += ` AND timestamp <= '${sanitize(to)}'`;
-    return `SELECT id, timestamp, source, level, message, fields, ingested_at FROM logs WHERE ${where} ORDER BY timestamp DESC`;
-  }
-
   async function exportCSV() {
     isExporting = true;
     try {
-      const resp = await api.post<LogsResponse>('/api/query', { sql: buildExportSQL() });
-      const csv = toCSV(resp.logs);
+      const payload = {
+        source: sourcesValue.length === 1 ? sourcesValue[0] : null,
+        from: from(),
+        to,
+        conditions: []
+      };
+      const logs = await api.post<Log[]>('/api/logs/export', payload);
+      const csv = toCSV(logs);
       downloadCSV(csv, `logs_export_${Date.now()}.csv`);
     } finally {
       isExporting = false;

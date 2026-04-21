@@ -33,6 +33,92 @@ pub struct LogsResponse {
     pub next_cursor: Option<String>,
 }
 
+// Using crate::db::SearchCondition
+
+#[derive(Debug, Deserialize)]
+pub struct SearchRequest {
+    pub source: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub conditions: Vec<crate::db::SearchCondition>,
+    pub limit: Option<u32>,
+    pub cursor: Option<String>,
+}
+
+pub async fn search_logs(
+    _user: AuthUser,
+    State(db): State<Arc<Db>>,
+    Json(req): Json<SearchRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let mut from_dt = None;
+    if let Some(ref f) = req.from {
+        from_dt = chrono::DateTime::parse_from_rfc3339(f).ok().map(|dt| dt.with_timezone(&Utc));
+    }
+    let mut to_dt = None;
+    if let Some(ref t) = req.to {
+        to_dt = chrono::DateTime::parse_from_rfc3339(t).ok().map(|dt| dt.with_timezone(&Utc));
+    }
+
+    let limit = req.limit.unwrap_or(50).min(200);
+
+    let logs = db.search_logs(
+        req.source.as_deref(),
+        from_dt,
+        to_dt,
+        &req.conditions,
+        limit,
+        req.cursor.as_deref(),
+    ).map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let has_more = logs.len() > limit as usize;
+    let mut logs = logs;
+    if has_more {
+        logs.truncate(limit as usize);
+    }
+    let next_cursor = if has_more {
+        logs.last().map(|l| l.id.clone())
+    } else {
+        None
+    };
+
+    Ok((StatusCode::OK, Json(LogsResponse { logs, next_cursor })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExportRequest {
+    pub source: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub conditions: Vec<crate::db::SearchCondition>,
+}
+
+pub async fn export_logs(
+    _user: AuthUser,
+    State(db): State<Arc<Db>>,
+    Json(req): Json<ExportRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let mut from_dt = None;
+    if let Some(ref f) = req.from {
+        from_dt = chrono::DateTime::parse_from_rfc3339(f).ok().map(|dt| dt.with_timezone(&Utc));
+    }
+    let mut to_dt = None;
+    if let Some(ref t) = req.to {
+        to_dt = chrono::DateTime::parse_from_rfc3339(t).ok().map(|dt| dt.with_timezone(&Utc));
+    }
+
+    // Export is limited to 10000 rows for stability
+    let logs = db.search_logs(
+        req.source.as_deref(),
+        from_dt,
+        to_dt,
+        &req.conditions,
+        10000,
+        None,
+    ).map_err(|e| AppError::Internal(e.to_string()))?;
+
+    Ok((StatusCode::OK, Json(logs)))
+}
+
 pub async fn get_logs(
     _user: AuthUser,
     State(db): State<Arc<Db>>,

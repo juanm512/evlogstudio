@@ -33,15 +33,26 @@ fn extract_str(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<St
     None
 }
 
-fn parse_duration_str(s: &str) -> Option<i32> {
-    let s = s.trim();
-    if let Some(n) = s.strip_suffix("ms") {
-        return n.trim().parse::<f64>().ok().map(|f| f as i32);
+fn parse_duration(value: &serde_json::Value) -> Option<i32> {
+    match value {
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() { Some(i as i32) }
+            else { n.as_f64().map(|f| f as i32) }
+        }
+        serde_json::Value::String(s) => {
+            let s = s.trim().to_lowercase();
+            if s.ends_with("ms") {
+                s.strip_suffix("ms")?.trim().parse::<f64>().ok().map(|f| f as i32)
+            } else if s.ends_with('s') {
+                s.strip_suffix('s')?.trim().parse::<f64>().ok().map(|f| (f * 1000.0) as i32)
+            } else if s.ends_with('m') {
+                s.strip_suffix('m')?.trim().parse::<f64>().ok().map(|f| (f * 60000.0) as i32)
+            } else {
+                s.parse::<f64>().ok().map(|f| f as i32)
+            }
+        }
+        _ => None,
     }
-    if let Some(n) = s.strip_suffix('s') {
-        return n.trim().parse::<f64>().ok().map(|f| (f * 1000.0) as i32);
-    }
-    s.parse::<f64>().ok().map(|f| f as i32)
 }
 
 fn extract_i32(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<i32> {
@@ -50,7 +61,7 @@ fn extract_i32(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<i3
             if let Some(n) = val.as_i64() { return Some(n as i32); }
             if let Some(f) = val.as_f64() { return Some(f as i32); }
             if let Some(s) = val.as_str() {
-                if let Some(ms) = parse_duration_str(s) { return Some(ms); }
+                if let Ok(ms) = s.parse::<i32>() { return Some(ms); }
             }
         }
     }
@@ -105,7 +116,10 @@ pub fn normalize(mut payload: Value, source: &str) -> NormalizedLog {
         method      = extract_str(obj, &["method", "httpMethod", "http_method"]);
         path        = extract_str(obj, &["path", "url", "pathname", "route"]);
         status      = extract_i32(obj, &["status", "statusCode", "status_code"]);
-        duration_ms = extract_i32(obj, &["duration_ms", "duration", "durationMs"]);
+        duration_ms = obj.get("duration_ms")
+            .or_else(|| obj.get("duration"))
+            .or_else(|| obj.get("durationMs"))
+            .and_then(parse_duration);
         request_id  = extract_str(obj, &["request_id", "requestId", "req_id", "traceId"]);
 
         if let Some(err_val) = obj.get("error") {
@@ -273,5 +287,16 @@ mod tests {
         assert!(normalize_batch(null_payload, "default").is_empty());
         assert!(normalize_batch(bool_payload, "default").is_empty());
         assert!(normalize_batch(number_payload, "default").is_empty());
+    }
+
+    #[test]
+    fn test_parse_duration() {
+        assert_eq!(parse_duration(&json!(1250)), Some(1250));
+        assert_eq!(parse_duration(&json!("1250")), Some(1250));
+        assert_eq!(parse_duration(&json!("1250ms")), Some(1250));
+        assert_eq!(parse_duration(&json!("1.25s")), Some(1250));
+        assert_eq!(parse_duration(&json!("1.5m")), Some(90000));
+        assert_eq!(parse_duration(&json!("abc")), None);
+        assert_eq!(parse_duration(&json!(null)), None);
     }
 }

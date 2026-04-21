@@ -23,7 +23,7 @@
 
   let { availableFields, activeColumns = $bindable(), anchorTop, anchorRight, onchange, onclose }: Props = $props();
 
-  const BASE_COLUMNS = ['timestamp', 'source', 'level', 'message'];
+  const BASE_COLUMNS = ['timestamp', 'source', 'level', 'message', 'duration'];
   const STORAGE_KEY = 'evlog_column_tree_state';
 
   // --- Local State ---
@@ -100,6 +100,7 @@
 
 <div
   bind:this={panelRef}
+  onclick={(e) => e.stopPropagation()}
   class="picker-panel"
   class:opening-up={openingDirection === 'up'}
   role="dialog"
@@ -117,7 +118,7 @@
       class="search-input"
     />
     {#if searchQuery}
-      <button onclick={() => searchQuery = ''} class="clear-btn">
+      <button onclick={(e) => { e.stopPropagation(); searchQuery = ''; }} class="clear-btn">
         <X size={14} />
       </button>
     {/if}
@@ -147,7 +148,7 @@
           <div 
             class="row" 
             style="padding-left: {depth * 16 + (isLeaf ? 16 : 0)}px"
-            onclick={() => isLeaf ? toggleColumn(node.fullPath!) : toggleExpand(node, currentPath)}
+            onclick={(e) => { e.stopPropagation(); isLeaf ? toggleColumn(node.fullPath!) : toggleExpand(node, currentPath) }}
             role="button"
           >
             {#if !isLeaf}

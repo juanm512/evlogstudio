@@ -43,11 +43,11 @@
       const msg = log.message ?? '';
       return msg.length > 80 ? msg.slice(0, 80) + '…' : msg;
     }
-    if (col === 'duration_ms') {
-      return log.duration_ms != null ? `${log.duration_ms}ms` : '';
-    }
+    // if (col === 'duration_ms') {
+    //   return log.duration_ms != null ? `${log.duration_ms}ms` : '';
+    // }
     if (TOP_LEVEL_LOG_COLS.has(col)) {
-      const val = (log as Record<string, unknown>)[col];
+      const val = (log)[col as keyof Log];
       if (val == null) return '';
       return String(val);
     }

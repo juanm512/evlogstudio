@@ -31,6 +31,9 @@ pub async fn post_query(
     Json(body): Json<QueryRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let trimmed = body.sql.trim().to_uppercase();
+    if _user.role != "admin" {
+        return Err(AppError::Forbidden);
+    }
     if !trimmed.starts_with("SELECT") {
         return Err(AppError::BadRequest("Only SELECT queries are allowed".to_string()));
     }
@@ -50,6 +53,9 @@ pub async fn post_query_json(
     Json(body): Json<QueryRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let trimmed = body.sql.trim().to_uppercase();
+    if _user.role != "admin" {
+        return Err(AppError::Forbidden);
+    }
     if !trimmed.starts_with("SELECT") {
         return Err(AppError::BadRequest("Only SELECT queries are allowed".to_string()));
     }

@@ -318,7 +318,9 @@
 
   <section class="search-area">
     <div class="search-input-wrapper">
-      <Search size={14} class="search-icon" />
+      <div class="search-icon">
+        <Search size={14} />
+      </div>
       <input 
         type="text" 
         placeholder="Filter fields..." 

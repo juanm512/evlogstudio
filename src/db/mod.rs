@@ -83,10 +83,52 @@ pub struct LogRecord {
     pub ingested_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct VolumePoint {
-    pub bucket: DateTime<Utc>,
-    pub count: i64,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Dashboard {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_by: String,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub widget_count: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Widget {
+    pub id: String,
+    pub dashboard_id: String,
+    pub title: String,
+    #[serde(rename = "type")]
+    pub widget_type: String,
+    pub width: String,
+    pub position: i32,
+    pub config: String,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct LogQueryParams {
+    pub source: Option<String>,
+    pub level: Option<String>,
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+    pub search: Option<String>,
+    pub service: Option<String>,
+    pub environment: Option<String>,
+    pub method: Option<String>,
+    pub path: Option<String>,
+    pub status: Option<i32>,
+    pub request_id: Option<String>,
+    pub limit: u32,
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchCondition {
+    pub field: String,
+    pub operator: String,
+    pub value: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -94,6 +136,25 @@ pub struct ErrorRateResult {
     pub total: i64,
     pub errors: i64,
     pub rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VolumePoint {
+    pub bucket: DateTime<Utc>,
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PercentileResult {
+    pub p50: Option<f64>,
+    pub p95: Option<f64>,
+    pub p99: Option<f64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TopValuePoint {
+    pub value: String,
+    pub count: i64,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -331,7 +392,9 @@ impl Db {
         let count: i64 = stmt.query_row([], |row| row.get(0)).map_err(|e| DbError::Query(e.to_string()))?;
         Ok(count as usize)
     }
+}
 
+impl Db {
     pub fn query_logs(&self, params: &LogQueryParams) -> Result<Vec<crate::ingest::normalize::NormalizedLog>, DbError> {
         let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
         
@@ -387,18 +450,13 @@ impl Db {
             args.push(Box::new(c.clone()));
         }
 
-        // Fetch limit+1 so the caller can detect whether a next page exists
         let fetch_limit = u64::from(params.limit) + 1;
         query.push_str(" ORDER BY timestamp DESC LIMIT ?");
         args.push(Box::new(fetch_limit as i64));
 
         let mut stmt = conn.prepare(&query).map_err(|e| DbError::Query(e.to_string()))?;
-
         let sql_args: Vec<&dyn duckdb::ToSql> = args.iter().map(|b| b.as_ref()).collect();
 
-        // col indices: 0=id,1=ts,2=source,3=service,4=env,5=method,6=path,
-        //              7=status,8=duration_ms,9=request_id,10=error,
-        //              11=level,12=message,13=fields,14=ingested_at
         let log_iter = stmt.query_map(sql_args.as_slice(), |row| {
             let fields_str: String = row.get(13)?;
             let fields = serde_json::from_str(&fields_str).unwrap_or(serde_json::Value::Null);
@@ -428,6 +486,229 @@ impl Db {
         }
 
         Ok(logs)
+    }
+
+    pub fn search_logs(
+        &self,
+        source: Option<&str>,
+        from: Option<DateTime<Utc>>,
+        to: Option<DateTime<Utc>>,
+        conditions: &[SearchCondition],
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> Result<Vec<crate::ingest::normalize::NormalizedLog>, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        
+        let mut query = "SELECT id, timestamp, source, service, environment, method, path, status, duration_ms, request_id, error, level, message, fields, ingested_at FROM logs WHERE 1=1".to_string();
+        let mut args: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
+
+        if let Some(s) = source {
+            query.push_str(" AND source = ?");
+            args.push(Box::new(s.to_string()));
+        }
+        if let Some(f) = from {
+            query.push_str(" AND timestamp >= ?");
+            args.push(Box::new(f.to_rfc3339()));
+        }
+        if let Some(t) = to {
+            query.push_str(" AND timestamp <= ?");
+            args.push(Box::new(t.to_rfc3339()));
+        }
+
+        let top_level = [
+            "id", "timestamp", "source", "service", "environment", "method", "path", 
+            "status", "duration_ms", "request_id", "error", "level", "message"
+        ];
+
+        for cond in conditions {
+            let is_numeric_op = matches!(cond.operator.as_str(), ">" | "<" | ">=" | "<=" | "gt" | "lt" | "gte" | "lte");
+            
+            let field_sql = match cond.field.as_str() {
+                f if top_level.contains(&f) => f.to_string(),
+                "duration" => "duration_ms".to_string(), // Alias duration to normalized duration_ms
+                _ => {
+                    let extracted = format!("fields->>'{}'", cond.field);
+                    if is_numeric_op {
+                        format!("TRY_CAST({} AS DOUBLE)", extracted)
+                    } else {
+                        extracted
+                    }
+                }
+            };
+
+            let op = match cond.operator.as_str() {
+                "=" | "equals" | "eq" => "=",
+                "!=" | "<>" | "not_equals" | "neq" => "!=",
+                ">" | "gt" => ">",
+                "<" | "lt" => "<",
+                ">=" | "gte" => ">=",
+                "<=" | "lte" => "<=",
+                "exists" => "IS NOT NULL", // fields->>'f' IS NOT NULL
+                "not_exists" => "IS NULL",
+                "contains" | "like" => "LIKE",
+                "not_contains" => "NOT LIKE",
+                _ => "=",
+            };
+
+            let val_str = match &cond.value {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Number(n) => n.to_string(),
+                serde_json::Value::Bool(b) => b.to_string(),
+                _ => cond.value.to_string(),
+            };
+
+            if op == "LIKE" || op == "NOT LIKE" {
+                query.push_str(&format!(" AND {} {} ?", field_sql, op));
+                args.push(Box::new(format!("%{}%", val_str)));
+            } else {
+                query.push_str(&format!(" AND {} {} ?", field_sql, op));
+                args.push(Box::new(val_str));
+            }
+        }
+
+        if let Some(c) = cursor {
+            query.push_str(" AND id < ?");
+            args.push(Box::new(c.to_string()));
+        }
+
+        let fetch_limit = u64::from(limit) + 1;
+        query.push_str(" ORDER BY timestamp DESC LIMIT ?");
+        args.push(Box::new(fetch_limit as i64));
+
+        let mut stmt = conn.prepare(&query).map_err(|e| DbError::Query(e.to_string()))?;
+        let sql_args: Vec<&dyn duckdb::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+
+        let log_iter = stmt.query_map(sql_args.as_slice(), |row| {
+            let fields_str: String = row.get(13)?;
+            let fields = serde_json::from_str(&fields_str).unwrap_or(serde_json::Value::Null);
+
+            Ok(crate::ingest::normalize::NormalizedLog {
+                id: row.get(0)?,
+                timestamp: row.get(1)?,
+                source: row.get(2)?,
+                service: row.get(3).ok().flatten(),
+                environment: row.get(4).ok().flatten(),
+                method: row.get(5).ok().flatten(),
+                path: row.get(6).ok().flatten(),
+                status: row.get(7).ok().flatten(),
+                duration_ms: row.get(8).ok().flatten(),
+                request_id: row.get(9).ok().flatten(),
+                error: row.get(10).ok().flatten(),
+                level: row.get(11)?,
+                message: row.get(12)?,
+                fields,
+                ingested_at: row.get(14)?,
+            })
+        }).map_err(|e| DbError::Query(e.to_string()))?;
+
+        let mut logs = Vec::new();
+        for log in log_iter {
+            logs.push(log.map_err(|e| DbError::Query(e.to_string()))?);
+        }
+
+        Ok(logs)
+    }
+
+    pub fn analytics_percentiles(
+        &self,
+        source: Option<&str>,
+        from: Option<DateTime<Utc>>,
+        to: Option<DateTime<Utc>>,
+    ) -> Result<PercentileResult, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+        
+        let mut query = "SELECT \
+            quantile_cont(duration_ms, 0.5) as p50, \
+            quantile_cont(duration_ms, 0.95) as p95, \
+            quantile_cont(duration_ms, 0.99) as p99 \
+            FROM logs WHERE duration_ms IS NOT NULL".to_string();
+        
+        let mut args: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
+
+        if let Some(s) = source {
+            query.push_str(" AND source = ?");
+            args.push(Box::new(s.to_string()));
+        }
+        if let Some(f) = from {
+            query.push_str(" AND timestamp >= ?");
+            args.push(Box::new(f.to_rfc3339()));
+        }
+        if let Some(t) = to {
+            query.push_str(" AND timestamp <= ?");
+            args.push(Box::new(t.to_rfc3339()));
+        }
+
+        let mut stmt = conn.prepare(&query).map_err(|e| DbError::Query(e.to_string()))?;
+        let sql_args: Vec<&dyn duckdb::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+
+        stmt.query_row(sql_args.as_slice(), |row| {
+            Ok(PercentileResult {
+                p50: row.get(0).ok(),
+                p95: row.get(1).ok(),
+                p99: row.get(2).ok(),
+            })
+        }).map_err(|e| DbError::Query(e.to_string()))
+    }
+
+    pub fn analytics_top_values(
+        &self,
+        source: Option<&str>,
+        from: Option<DateTime<Utc>>,
+        to: Option<DateTime<Utc>>,
+        field: &str,
+        limit: u32,
+    ) -> Result<Vec<TopValuePoint>, DbError> {
+        let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
+
+        let top_level = [
+            "service", "environment", "method", "path", "status", "level", "source"
+        ];
+
+        let field_sql = if top_level.contains(&field) {
+            field.to_string()
+        } else {
+            // Securely escape double quotes for JSON path if needed, 
+            // but for simplicity we'll just check it's alphanumeric+dot
+            if !field.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+                return Err(DbError::InvalidInput(format!("Invalid field name: {}", field)));
+            }
+            format!("fields->>'{}'", field)
+        };
+
+        let mut query = format!("SELECT {} as val, count(*) as cnt FROM logs WHERE {} IS NOT NULL", field_sql, field_sql);
+        let mut args: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
+
+        if let Some(s) = source {
+            query.push_str(" AND source = ?");
+            args.push(Box::new(s.to_string()));
+        }
+        if let Some(f) = from {
+            query.push_str(" AND timestamp >= ?");
+            args.push(Box::new(f.to_rfc3339()));
+        }
+        if let Some(t) = to {
+            query.push_str(" AND timestamp <= ?");
+            args.push(Box::new(t.to_rfc3339()));
+        }
+
+        query.push_str(" GROUP BY 1 ORDER BY cnt DESC LIMIT ?");
+        args.push(Box::new(limit as i64));
+
+        let mut stmt = conn.prepare(&query).map_err(|e| DbError::Query(e.to_string()))?;
+        let sql_args: Vec<&dyn duckdb::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+
+        let rows = stmt.query_map(sql_args.as_slice(), |row| {
+            Ok(TopValuePoint {
+                value: row.get::<_, Option<String>>(0)?.unwrap_or_else(|| "null".to_string()),
+                count: row.get(1)?,
+            })
+        }).map_err(|e| DbError::Query(e.to_string()))?;
+
+        let mut data = Vec::new();
+        for r in rows {
+            data.push(r.map_err(|e| DbError::Query(e.to_string()))?);
+        }
+        Ok(data)
     }
 
     /// Parsea strings tipo "30d", "24h", "60m" a minutos totales.
@@ -1685,47 +1966,4 @@ mod tests {
     fn test_parse_retention_empty() {
         assert!(Db::parse_retention("").is_err());
     }
-}
-
-// ─── Dashboard / Widget structs ───────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Dashboard {
-    pub id: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub created_by: String,
-    pub created_at: String,
-    pub updated_at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub widget_count: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Widget {
-    pub id: String,
-    pub dashboard_id: String,
-    pub title: String,
-    #[serde(rename = "type")]
-    pub widget_type: String,
-    pub width: String,
-    pub position: i32,
-    pub config: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct LogQueryParams {
-    pub source: Option<String>,
-    pub level: Option<String>,
-    pub from: Option<DateTime<Utc>>,
-    pub to: Option<DateTime<Utc>>,
-    pub search: Option<String>,
-    pub service: Option<String>,
-    pub environment: Option<String>,
-    pub method: Option<String>,
-    pub path: Option<String>,
-    pub status: Option<i32>,
-    pub request_id: Option<String>,
-    pub limit: u32,
-    pub cursor: Option<String>,
 }

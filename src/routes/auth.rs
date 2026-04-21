@@ -40,10 +40,7 @@ pub async fn login_handler(
 
     use argon2::{password_hash::PasswordHash, Argon2, PasswordVerifier};
 
-    let user_opt = match state.db.find_user_by_email(&payload.email) {
-        Ok(opt) => opt,
-        _ => None, // En caso de error de DB, tratamos como no encontrado para el dummy hash
-    };
+    let user_opt = state.db.find_user_by_email(&payload.email).unwrap_or_default();
 
     let (is_valid, user) = match user_opt {
         Some(u) => {
