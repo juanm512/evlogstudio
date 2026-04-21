@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS logs (
   method       TEXT,
   path         TEXT,
   status       INTEGER,
-  duration_ms  INTEGER,
+  duration     INTEGER,
   request_id   TEXT,
   error        TEXT,
   level        TEXT,
@@ -24,10 +24,13 @@ ALTER TABLE logs ADD COLUMN IF NOT EXISTS environment TEXT;
 ALTER TABLE logs ADD COLUMN IF NOT EXISTS method TEXT;
 ALTER TABLE logs ADD COLUMN IF NOT EXISTS path TEXT;
 ALTER TABLE logs ADD COLUMN IF NOT EXISTS status INTEGER;
-ALTER TABLE logs ADD COLUMN IF NOT EXISTS duration_ms INTEGER;
+ALTER TABLE logs ADD COLUMN IF NOT EXISTS duration INTEGER;
 ALTER TABLE logs ADD COLUMN IF NOT EXISTS request_id TEXT;
 ALTER TABLE logs ADD COLUMN IF NOT EXISTS error TEXT;
 "#;
+
+pub const MIGRATE_LOGS_RENAME_DURATION: &str = 
+    "ALTER TABLE logs RENAME COLUMN duration_ms TO duration";
 
 pub const CREATE_IDX_LOGS_SERVICE: &str =
     "CREATE INDEX IF NOT EXISTS idx_logs_service ON logs (service)";
@@ -38,7 +41,7 @@ pub const CREATE_IDX_LOGS_STATUS: &str =
 pub const CREATE_IDX_LOGS_REQUEST_ID: &str =
     "CREATE INDEX IF NOT EXISTS idx_logs_request_id ON logs (request_id)";
 pub const CREATE_IDX_LOGS_DURATION: &str =
-    "CREATE INDEX IF NOT EXISTS idx_logs_duration ON logs (duration_ms)";
+    "CREATE INDEX IF NOT EXISTS idx_logs_duration ON logs (duration)";
 
 pub const CREATE_SCHEMA_INFERENCE: &str = r#"
 CREATE TABLE IF NOT EXISTS _schema (

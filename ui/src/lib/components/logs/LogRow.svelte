@@ -32,7 +32,7 @@
   }
 
   const TOP_LEVEL_LOG_COLS = new Set([
-    'service','environment','method','path','status','duration_ms','request_id','error',
+    'service','environment','method','path','status','duration','request_id','error',
   ]);
 
   function getCellValue(col: string): string {
@@ -43,9 +43,9 @@
       const msg = log.message ?? '';
       return msg.length > 80 ? msg.slice(0, 80) + '…' : msg;
     }
-    // if (col === 'duration_ms') {
-    //   return log.duration_ms != null ? `${log.duration_ms}ms` : '';
-    // }
+    if (col === 'duration' || col === 'duration_ms') {
+      return log.duration != null ? `${log.duration}ms` : '';
+    }
     if (TOP_LEVEL_LOG_COLS.has(col)) {
       const val = (log)[col as keyof Log];
       if (val == null) return '';

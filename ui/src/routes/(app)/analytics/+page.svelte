@@ -121,16 +121,6 @@
     refetchIntervalInBackground: false,
   }));
 
-  // const sourcesQuery = createQuery(() => ({
-  //   queryKey: ['analytics', 'sources-check', from(), to],
-  //   queryFn: () => {
-  //     const params = new URLSearchParams({ from: from(), to, limit: '1' });
-  //     return api.get<LogsResponse>(`/api/logs?${params}`);
-  //   },
-  //   refetchInterval: 60_000,
-  //   refetchIntervalInBackground: false,
-  // }));
-
   const schemaQuery = createQuery(() => ({
     queryKey: ['schema', ...sourcesValue],
     queryFn: () => {
@@ -142,7 +132,7 @@
   }));
 
   let fieldPaths = $derived(schemaQuery.data?.fields.map(f => f.field_path) ?? []);
-  let hasDurationMs = $derived(fieldPaths.includes('duration_ms'));
+  let hasDuration = $derived(fieldPaths.includes('duration'));
 
   interface PercentileResult { p50: number | null; p95: number | null; p99: number | null; }
 
@@ -309,8 +299,8 @@
       </div>
     </div>
 
-    <!-- Duration Percentiles (admin + duration_ms in schema) -->
-    {#if isAdmin && hasDurationMs}
+    <!-- Duration Percentiles (admin + duration in schema) -->
+    {#if hasDuration}
       <div>
         <div class="flex items-center gap-3 px-1 mb-3">
           <h2 class="text-[12px] font-bold text-text-secondary uppercase tracking-[3px]">Duration Percentiles</h2>

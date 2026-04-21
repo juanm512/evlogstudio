@@ -279,10 +279,10 @@
     {/if}
 
     <div class="metrics-row">
-      {#if log.duration_ms !== null}
+      {#if log.duration !== null}
         <div class="metric">
           <span class="m-label">DURATION</span>
-          <span class="m-val">{log.duration_ms < 1000 ? `${log.duration_ms}ms` : `${(log.duration_ms / 1000).toFixed(2)}s`}</span>
+          <span class="m-val">{log.duration < 1000 ? `${log.duration}ms` : `${(log.duration / 1000).toFixed(2)}s`}</span>
         </div>
       {/if}
       <div class="metric">

@@ -74,7 +74,7 @@ pub struct LogRecord {
     pub method: Option<String>,
     pub path: Option<String>,
     pub status: Option<i32>,
-    pub duration_ms: Option<i32>,
+    pub duration: Option<i32>,
     pub request_id: Option<String>,
     pub error: Option<String>,
     pub level: Option<String>,
@@ -276,6 +276,9 @@ impl Db {
         conn.execute_batch(schema::CREATE_IDX_LOGS_DURATION)
             .map_err(|e| DbError::Migration(format!("idx_logs_duration: {}", e)))?;
 
+        // Migration: Rename duration to duration if it exists
+        let _ = conn.execute_batch(schema::MIGRATE_LOGS_RENAME_DURATION);
+
         conn.execute_batch(schema::CREATE_SCHEMA_INFERENCE)
             .map_err(|e| DbError::Migration(format!("_schema: {}", e)))?;
 
@@ -354,7 +357,7 @@ impl Db {
         let mut count = 0;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO logs (id, timestamp, source, service, environment, method, path, status, duration_ms, request_id, error, level, message, fields, ingested_at) \
+                "INSERT INTO logs (id, timestamp, source, service, environment, method, path, status, duration, request_id, error, level, message, fields, ingested_at) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             ).map_err(|e| DbError::Query(format!("Prepare statement error: {}", e)))?;
 
@@ -369,7 +372,7 @@ impl Db {
                     &log.method,
                     &log.path,
                     &log.status,
-                    &log.duration_ms,
+                    &log.duration,
                     &log.request_id,
                     &log.error,
                     &log.level,
@@ -398,7 +401,7 @@ impl Db {
     pub fn query_logs(&self, params: &LogQueryParams) -> Result<Vec<crate::ingest::normalize::NormalizedLog>, DbError> {
         let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
         
-        let mut query = "SELECT id, timestamp, source, service, environment, method, path, status, duration_ms, request_id, error, level, message, fields, ingested_at FROM logs WHERE 1=1".to_string();
+        let mut query = "SELECT id, timestamp, source, service, environment, method, path, status, duration, request_id, error, level, message, fields, ingested_at FROM logs WHERE 1=1".to_string();
         let mut args: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
 
         if let Some(ref s) = params.source {
@@ -470,7 +473,7 @@ impl Db {
                 method: row.get(5).ok().flatten(),
                 path: row.get(6).ok().flatten(),
                 status: row.get(7).ok().flatten(),
-                duration_ms: row.get(8).ok().flatten(),
+                duration: row.get(8).ok().flatten(),
                 request_id: row.get(9).ok().flatten(),
                 error: row.get(10).ok().flatten(),
                 level: row.get(11)?,
@@ -499,7 +502,7 @@ impl Db {
     ) -> Result<Vec<crate::ingest::normalize::NormalizedLog>, DbError> {
         let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
         
-        let mut query = "SELECT id, timestamp, source, service, environment, method, path, status, duration_ms, request_id, error, level, message, fields, ingested_at FROM logs WHERE 1=1".to_string();
+        let mut query = "SELECT id, timestamp, source, service, environment, method, path, status, duration, request_id, error, level, message, fields, ingested_at FROM logs WHERE 1=1".to_string();
         let mut args: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
 
         if let Some(s) = source {
@@ -517,7 +520,7 @@ impl Db {
 
         let top_level = [
             "id", "timestamp", "source", "service", "environment", "method", "path", 
-            "status", "duration_ms", "request_id", "error", "level", "message"
+            "status", "duration", "request_id", "error", "level", "message"
         ];
 
         for cond in conditions {
@@ -525,7 +528,6 @@ impl Db {
             
             let field_sql = match cond.field.as_str() {
                 f if top_level.contains(&f) => f.to_string(),
-                "duration" => "duration_ms".to_string(), // Alias duration to normalized duration_ms
                 _ => {
                     let extracted = format!("fields->>'{}'", cond.field);
                     if is_numeric_op {
@@ -591,7 +593,7 @@ impl Db {
                 method: row.get(5).ok().flatten(),
                 path: row.get(6).ok().flatten(),
                 status: row.get(7).ok().flatten(),
-                duration_ms: row.get(8).ok().flatten(),
+                duration: row.get(8).ok().flatten(),
                 request_id: row.get(9).ok().flatten(),
                 error: row.get(10).ok().flatten(),
                 level: row.get(11)?,
@@ -618,10 +620,10 @@ impl Db {
         let conn = self.conn.lock().map_err(|e| DbError::Query(format!("Mutex envenenado: {}", e)))?;
         
         let mut query = "SELECT \
-            quantile_cont(duration_ms, 0.5) as p50, \
-            quantile_cont(duration_ms, 0.95) as p95, \
-            quantile_cont(duration_ms, 0.99) as p99 \
-            FROM logs WHERE duration_ms IS NOT NULL".to_string();
+            quantile_cont(duration, 0.5) as p50, \
+            quantile_cont(duration, 0.95) as p95, \
+            quantile_cont(duration, 0.99) as p99 \
+            FROM logs WHERE duration IS NOT NULL".to_string();
         
         let mut args: Vec<Box<dyn duckdb::ToSql>> = Vec::new();
 
@@ -1494,7 +1496,7 @@ impl Db {
         // --- Build full query ---
         let mut query = format!(
             "SELECT id, timestamp, source, service, environment, method, path, \
-             status, duration_ms, request_id, error, level, message, fields, ingested_at \
+             status, duration, request_id, error, level, message, fields, ingested_at \
              FROM logs WHERE {}",
             cutoff_clause
         );
@@ -1520,7 +1522,7 @@ impl Db {
 
         let row_iter = stmt.query_map(sql_args.as_slice(), |row| {
             // col indices: 0=id,1=ts,2=source,3=service,4=env,5=method,6=path,
-            //              7=status,8=duration_ms,9=request_id,10=error,
+            //              7=status,8=duration,9=request_id,10=error,
             //              11=level,12=message,13=fields,14=ingested_at
             Ok(LogRecord {
                 id: row.get(0)?,
@@ -1531,7 +1533,7 @@ impl Db {
                 method: row.get(5).ok().flatten(),
                 path: row.get(6).ok().flatten(),
                 status: row.get(7).ok().flatten(),
-                duration_ms: row.get(8).ok().flatten(),
+                duration: row.get(8).ok().flatten(),
                 request_id: row.get(9).ok().flatten(),
                 error: row.get(10).ok().flatten(),
                 level: row.get(11).ok(),
@@ -1600,7 +1602,7 @@ impl Db {
         let mut stmt = conn.prepare(sql).map_err(|e| DbError::Query(e.to_string()))?;
         // Expected col order (from buildAdvancedSql):
         // 0=id,1=ts,2=source,3=service,4=env,5=method,6=path,
-        // 7=status,8=duration_ms,9=request_id,10=error,
+        // 7=status,8=duration,9=request_id,10=error,
         // 11=level,12=message,13=fields,14=ingested_at
         let log_iter = stmt.query_map([], |row| {
             let fields_str: String = row.get(13)?;
@@ -1614,7 +1616,7 @@ impl Db {
                 method: row.get(5).ok().flatten(),
                 path: row.get(6).ok().flatten(),
                 status: row.get(7).ok().flatten(),
-                duration_ms: row.get(8).ok().flatten(),
+                duration: row.get(8).ok().flatten(),
                 request_id: row.get(9).ok().flatten(),
                 error: row.get(10).ok().flatten(),
                 level: row.get(11)?,

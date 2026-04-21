@@ -13,7 +13,7 @@ pub struct NormalizedLog {
     pub method: Option<String>,
     pub path: Option<String>,
     pub status: Option<i32>,
-    pub duration_ms: Option<i32>,
+    pub duration: Option<i32>,
     pub request_id: Option<String>,
     pub error: Option<String>,
     pub level: Option<String>,
@@ -22,9 +22,9 @@ pub struct NormalizedLog {
     pub ingested_at: DateTime<Utc>,
 }
 
-fn extract_str(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
+fn extract_str(obj: &mut serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
     for key in keys {
-        if let Some(val) = obj.get(*key) {
+        if let Some(val) = obj.remove(*key) {
             if let Some(s) = val.as_str() {
                 return Some(s.to_string());
             }
@@ -33,13 +33,13 @@ fn extract_str(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<St
     None
 }
 
-fn parse_duration(value: &serde_json::Value) -> Option<i32> {
+fn parse_duration(value: Value) -> Option<i32> {
     match value {
-        serde_json::Value::Number(n) => {
+        Value::Number(n) => {
             if let Some(i) = n.as_i64() { Some(i as i32) }
             else { n.as_f64().map(|f| f as i32) }
         }
-        serde_json::Value::String(s) => {
+        Value::String(s) => {
             let s = s.trim().to_lowercase();
             if s.ends_with("ms") {
                 s.strip_suffix("ms")?.trim().parse::<f64>().ok().map(|f| f as i32)
@@ -55,9 +55,9 @@ fn parse_duration(value: &serde_json::Value) -> Option<i32> {
     }
 }
 
-fn extract_i32(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<i32> {
+fn extract_i32(obj: &mut serde_json::Map<String, Value>, keys: &[&str]) -> Option<i32> {
     for key in keys {
-        if let Some(val) = obj.get(*key) {
+        if let Some(val) = obj.remove(*key) {
             if let Some(n) = val.as_i64() { return Some(n as i32); }
             if let Some(f) = val.as_f64() { return Some(f as i32); }
             if let Some(s) = val.as_str() {
@@ -77,13 +77,13 @@ pub fn normalize(mut payload: Value, source: &str) -> NormalizedLog {
     let mut method = None;
     let mut path = None;
     let mut status: Option<i32> = None;
-    let mut duration_ms: Option<i32> = None;
+    let mut duration: Option<i32> = None;
     let mut request_id = None;
     let mut error = None;
 
     if let Some(obj) = payload.as_object_mut() {
         for key in ["timestamp", "time", "ts", "@timestamp"] {
-            if let Some(val) = obj.get(key) {
+            if let Some(val) = obj.remove(key) {
                 if let Some(s) = val.as_str() {
                     if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(s) {
                         timestamp = Some(ts.with_timezone(&Utc));
@@ -94,7 +94,7 @@ pub fn normalize(mut payload: Value, source: &str) -> NormalizedLog {
         }
 
         for key in ["level", "severity", "lvl"] {
-            if let Some(val) = obj.get(key) {
+            if let Some(val) = obj.remove(key) {
                 if let Some(s) = val.as_str() {
                     level = Some(s.to_string());
                     break;
@@ -103,7 +103,7 @@ pub fn normalize(mut payload: Value, source: &str) -> NormalizedLog {
         }
 
         for key in ["message", "msg", "body"] {
-            if let Some(val) = obj.get(key) {
+            if let Some(val) = obj.remove(key) {
                 if let Some(s) = val.as_str() {
                     message = Some(s.to_string());
                     break;
@@ -116,13 +116,13 @@ pub fn normalize(mut payload: Value, source: &str) -> NormalizedLog {
         method      = extract_str(obj, &["method", "httpMethod", "http_method"]);
         path        = extract_str(obj, &["path", "url", "pathname", "route"]);
         status      = extract_i32(obj, &["status", "statusCode", "status_code"]);
-        duration_ms = obj.get("duration_ms")
-            .or_else(|| obj.get("duration"))
-            .or_else(|| obj.get("durationMs"))
+        duration    = obj.remove("duration")
+            .or_else(|| obj.remove("duration_ms"))
+            .or_else(|| obj.remove("durationMs"))
             .and_then(parse_duration);
         request_id  = extract_str(obj, &["request_id", "requestId", "req_id", "traceId"]);
 
-        if let Some(err_val) = obj.get("error") {
+        if let Some(err_val) = obj.remove("error") {
             error = match err_val {
                 Value::String(s) => Some(s.clone()),
                 Value::Null => None,
@@ -140,7 +140,7 @@ pub fn normalize(mut payload: Value, source: &str) -> NormalizedLog {
         method,
         path,
         status,
-        duration_ms,
+        duration,
         request_id,
         error,
         level,
@@ -265,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_preserves_original_fields() {
+    fn test_normalize_removes_extracted_fields_from_json() {
         let payload = json!({
             "timestamp": "2023-01-01T00:00:00Z",
             "level": "info",
@@ -274,8 +274,10 @@ mod tests {
         });
         
         let log = normalize(payload.clone(), "default");
-        // The embedded 'fields' should be exactly the unchanged original payload
-        assert_eq!(log.fields, payload);
+        // Extracted fields should be removed from the 'fields' JSON blob
+        assert_eq!(log.fields, json!({"extra_field": 123}));
+        assert_eq!(log.level.as_deref(), Some("info"));
+        assert_eq!(log.message.as_deref(), Some("hello"));
     }
 
     #[test]
@@ -291,12 +293,12 @@ mod tests {
 
     #[test]
     fn test_parse_duration() {
-        assert_eq!(parse_duration(&json!(1250)), Some(1250));
-        assert_eq!(parse_duration(&json!("1250")), Some(1250));
-        assert_eq!(parse_duration(&json!("1250ms")), Some(1250));
-        assert_eq!(parse_duration(&json!("1.25s")), Some(1250));
-        assert_eq!(parse_duration(&json!("1.5m")), Some(90000));
-        assert_eq!(parse_duration(&json!("abc")), None);
-        assert_eq!(parse_duration(&json!(null)), None);
+        assert_eq!(parse_duration(json!(1250)), Some(1250));
+        assert_eq!(parse_duration(json!("1250")), Some(1250));
+        assert_eq!(parse_duration(json!("1250ms")), Some(1250));
+        assert_eq!(parse_duration(json!("1.25s")), Some(1250));
+        assert_eq!(parse_duration(json!("1.5m")), Some(90000));
+        assert_eq!(parse_duration(json!("abc")), None);
+        assert_eq!(parse_duration(json!(null)), None);
     }
 }

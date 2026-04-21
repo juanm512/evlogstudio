@@ -7,7 +7,7 @@ export interface Log {
   method: string | null;
   path: string | null;
   status: number | null;
-  duration_ms: number | null;
+  duration: number | null;
   request_id: string | null;
   error: string | null;
   level: string | null;

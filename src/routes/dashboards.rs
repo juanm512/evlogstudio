@@ -111,7 +111,7 @@ pub fn router() -> Router<AppState> {
 
 const DIRECT_COLS: &[&str] = &[
     "service", "source", "level", "method", "path", "environment",
-    "request_id", "error", "message", "status", "duration_ms",
+    "request_id", "error", "message", "status", "duration",
 ];
 
 fn is_direct_col(f: &str) -> bool {

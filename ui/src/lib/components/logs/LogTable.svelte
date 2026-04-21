@@ -64,13 +64,13 @@
   }
 
   function getFieldType(col: string): string {
-    if (col === 'duration_ms' || col === 'duration' || col === 'status') return 'number';
+    if (col === 'duration' || col === 'duration_ms' || col === 'status') return 'number';
     return schemaFields.find(f => f.field_path === col)?.field_type ?? 'string';
   }
 
   const TOP_LEVEL_LOG_COLS = new Set([
-    'timestamp','source','level','message',
-    'service','environment','method','path','status','duration_ms','duration','request_id','error',
+    'timestamp','source','level','duration','message',
+    'service','environment','method','path','status','request_id','error',
   ]);
 
   /**
@@ -89,25 +89,27 @@
     return parseFloat(s) || 0;
   }
 
-  function getSortValue(log: Log, col: string): unknown {
-    // 1. Precise mappings for special UI columns
-    if (col === 'duration') return log.duration_ms ?? log.fields?.duration ?? 0;
-    if (col === 'duration_ms') return log.duration_ms ?? 0;
-    
-    // 2. Top-level columns
-    if (TOP_LEVEL_LOG_COLS.has(col)) {
-        const val = (log as any)[col];
-        if (val !== undefined) return val;
-    }
 
-    // 3. Nested fields
-    const parts = col.split('.');
-    let current: any = log.fields ?? {};
+  function getNestedValue(obj: any, path: string): any {
+    const parts = path.split('.');
+    let current = obj;
     for (const part of parts) {
-      if (current == null || typeof current !== 'object') return '';
+      if (current == null || typeof current !== 'object') return undefined;
       current = current[part];
     }
-    return current ?? '';
+    return current;
+  }
+
+  function getSortValue(log: Log, col: string): any {
+    if (col === 'timestamp') return new Date(log.timestamp).getTime();
+    if (col === 'level') return log.level ?? '';
+    if (col === 'source') return log.source ?? '';
+    if (col === 'message') return log.message ?? '';
+    if (col === 'duration' || col === 'duration_ms') return log.duration ?? 0;
+    if (TOP_LEVEL_LOG_COLS.has(col)) {
+      return (log as any)[col] ?? '';
+    }
+    return getNestedValue(log.fields ?? {}, col) ?? '';
   }
 
   let sortedLogs = $derived.by<Log[]>(() => {

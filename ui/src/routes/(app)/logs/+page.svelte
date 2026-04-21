@@ -11,7 +11,7 @@
 
   // ─── Constants ────────────────────────────────────────────────────────────────
   const COLUMNS_KEY = 'evlog_columns';
-  const DEFAULT_COLUMNS = ['timestamp', 'source', 'level', 'message'];
+  const DEFAULT_COLUMNS = ['timestamp', 'source', 'level', 'duration', 'message'];
 
   // ─── State ────────────────────────────────────────────────────────────────────
   interface Filters {
@@ -97,8 +97,8 @@
 
   // Top-level DB columns — referenced directly, not via json_extract_string
   const TOP_LEVEL_COLS = new Set([
-    'level', 'source', 'message', 'timestamp',
-    'service', 'environment', 'method', 'path', 'status', 'duration_ms', 'request_id', 'error',
+    'level', 'source', 'message', 'duration', 'timestamp',
+    'service', 'environment', 'method', 'path', 'status', 'request_id', 'error',
   ]);
 
   function buildSearchRequest(f: Filters, sources: string[], conds: FilterCondition[], cur: string | null = null, lim: number = 100) {
@@ -192,13 +192,14 @@
   const BUILTIN_FIELDS: import('$lib/types').SchemaField[] = [
     { source: '_builtin', field_path: 'level',   field_type: 'string', seen_count: 0, last_seen: '' },
     { source: '_builtin', field_path: 'source',  field_type: 'string', seen_count: 0, last_seen: '' },
+    { source: '_builtin', field_path: 'duration', field_type: 'number', seen_count: 0, last_seen: '' },
     { source: '_builtin', field_path: 'message', field_type: 'string', seen_count: 0, last_seen: '' },
   ];
 
   let allSchemaFields = $derived([
     ...BUILTIN_FIELDS,
     ...(schemaQuery.data?.fields ?? []).map(f => {
-      if (f.field_path === 'duration' || f.field_path === 'duration_ms' || f.field_path === 'status') {
+      if (f.field_path === 'duration' || f.field_path === 'status') {
         return { ...f, field_type: 'number' };
       }
       return f;

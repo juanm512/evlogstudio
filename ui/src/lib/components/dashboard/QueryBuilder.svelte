@@ -30,7 +30,7 @@
   // ─── Derived field lists ──────────────────────────────────────────────────
   const DIRECT_FIELDS = [
     'timestamp', 'service', 'source', 'level', 'method',
-    'path', 'status', 'environment', 'duration_ms', 'request_id',
+    'path', 'status', 'environment', 'duration', 'request_id',
   ];
 
   // Filter schema fields by selected sources (if any)
